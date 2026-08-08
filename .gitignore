@@ -13,7 +13,7 @@ out/
 # Tauri / Rust
 /src-tauri/target/
 **/target/
-Cargo.lock
+/src-tauri/gen/schemas/
 
 # Editor / OS
 .DS_Store
@@ -38,3 +38,6 @@ pnpm-debug.log*
 .env.*
 !.env.example
 *.pem
+
+# Optional repo-local Rust toolchain used by contributors without rustup
+.dev-tools/
