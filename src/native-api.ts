@@ -1,11 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import {
-  MOCK_TEAM_ID,
-  MOCK_TEAM_NAME,
-  mockChannels,
-  mockMembersByChannel,
-  mockPresence,
-} from "./mock-data";
+import { mockChannelsByTeam, mockMembersByChannel, mockPresence } from "./mock-data";
 import type {
   AppStatus,
   Channel,
@@ -58,10 +52,8 @@ export async function getAppStatus(): Promise<AppStatus> {
   if (!isTauri) {
     return {
       credentialsConfigured: false,
-      authenticated: false,
-      teamId: MOCK_TEAM_ID,
-      teamName: MOCK_TEAM_NAME,
-      selectedChannelId: mockChannels[0]?.id ?? null,
+      workspaces: [],
+      activeTeamId: null,
       alwaysOnTop: false,
       redirectUri: "http://127.0.0.1:53641/oauth/callback",
     };
@@ -69,29 +61,41 @@ export async function getAppStatus(): Promise<AppStatus> {
   return native<AppStatus>("get_app_status");
 }
 
-export async function listChannels(useMock: boolean): Promise<Channel[]> {
-  if (useMock) return structuredClone(mockChannels);
-  return native<Channel[]>("list_channels");
+export async function listChannels(
+  teamId: string,
+  useMock: boolean,
+): Promise<Channel[]> {
+  if (useMock) return structuredClone(mockChannelsByTeam[teamId] ?? []);
+  return native<Channel[]>("list_channels", { teamId });
 }
 
 export async function loadMembers(
+  teamId: string,
   channelId: string,
   useMock: boolean,
 ): Promise<Member[]> {
   if (useMock) return structuredClone(mockMembersByChannel[channelId] ?? []);
-  return native<Member[]>("get_channel_members", { channelId });
+  return native<Member[]>("get_channel_members", { teamId, channelId });
 }
 
 export async function getPresence(
+  teamId: string,
   userId: string,
   useMock: boolean,
 ): Promise<PresenceReply> {
   if (useMock) return mockPresence(userId);
-  return native<PresenceReply>("get_presence", { userId });
+  return native<PresenceReply>("get_presence", { teamId, userId });
 }
 
-export async function saveSelectedChannel(channelId: string): Promise<void> {
-  if (isTauri) await native("save_selected_channel", { channelId });
+export async function setActiveWorkspace(teamId: string): Promise<void> {
+  if (isTauri) await native("set_active_workspace", { teamId });
+}
+
+export async function saveSelectedChannel(
+  teamId: string,
+  channelId: string,
+): Promise<void> {
+  if (isTauri) await native("save_selected_channel", { teamId, channelId });
 }
 
 export async function setAlwaysOnTop(enabled: boolean): Promise<void> {
@@ -102,8 +106,8 @@ export async function startOAuth(): Promise<void> {
   await native("start_oauth");
 }
 
-export async function logout(): Promise<void> {
-  await native("logout");
+export async function disconnectWorkspace(teamId: string): Promise<void> {
+  await native("disconnect_workspace", { teamId });
 }
 
 export async function openDm(teamId: string, userId: string): Promise<void> {

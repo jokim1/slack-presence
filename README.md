@@ -4,6 +4,8 @@ A lightweight macOS menu-bar companion that keeps the people in one selected Sla
 
 The app is mock-first: it opens with demo people and channels before any Slack credentials are configured. Once connected, it uses only Slack's official OAuth and Web APIs. Presence is the same coarse `active` or `away` signal Slack exposes. A channel must be selected manually because Slack does not expose the channel currently focused in its desktop app.
 
+Multiple workspaces are supported: connect each one through **Add a workspace** in the switcher under the panel title, and switch between them there. Each workspace keeps its own user token in macOS Keychain and remembers its own selected channel.
+
 ## Run the demo UI
 
 ```sh
@@ -31,10 +33,10 @@ npm run build
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-The first unsigned local build may prompt macOS to allow Keychain access. Packaging, signing, notarization, token rotation, and multi-workspace installs are outside the Phase 1 MVP.
+The first unsigned local build may prompt macOS to allow Keychain access. Packaging, signing, notarization, and token rotation are outside the current phase.
 
 ## Privacy and security
 
-The Slack user token is stored only in macOS Keychain. It is never sent to the frontend, placed in `localStorage`, or logged. Local app credentials come from a gitignored `.env` file. The app does not read Slack cookies, use internal Slack endpoints, send messages, or request `chat:write`.
+Slack user tokens are stored only in macOS Keychain, one entry per connected workspace. They are never sent to the frontend, placed in `localStorage`, or logged. Local app credentials come from a gitignored `.env` file. The app does not read Slack cookies, use internal Slack endpoints, send messages, or request `chat:write`.
 
 Not affiliated with or endorsed by Slack Technologies / Salesforce. Slack is a trademark of Salesforce.

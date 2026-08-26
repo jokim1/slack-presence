@@ -1,5 +1,7 @@
 import "./styles.css";
+import { mockWorkspaces } from "./mock-data";
 import {
+  disconnectWorkspace,
   getAppStatus,
   getPresence,
   hidePanel,
@@ -8,15 +10,15 @@ import {
   listenForOAuth,
   listenForPanelVisibility,
   loadMembers,
-  logout,
   openDm,
   saveSelectedChannel,
+  setActiveWorkspace,
   setAlwaysOnTop,
   startOAuth,
   startWindowDrag,
 } from "./native-api";
 import { cadenceForMemberCount, PresenceScheduler } from "./presence-scheduler";
-import type { AppStatus, Channel, Member, PresenceReply } from "./types";
+import type { AppStatus, Channel, Member, PresenceReply, WorkspaceStatus } from "./types";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("App root is missing");
@@ -27,10 +29,13 @@ app.innerHTML = `
       <div class="brand-mark" aria-hidden="true">
         <span></span><span></span><span></span>
       </div>
-      <div class="brand-copy" data-tauri-drag-region>
-        <strong>Presence</strong>
-        <span id="workspace-name">Starting up…</span>
-      </div>
+      <button class="workspace-switcher" id="workspace-toggle" aria-haspopup="listbox" aria-expanded="false">
+        <span class="brand-copy">
+          <strong>Presence</strong>
+          <span id="workspace-name">Starting up…</span>
+        </span>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>
+      </button>
       <div class="window-actions">
         <button class="icon-button" id="settings-toggle" aria-label="Open settings" aria-expanded="false">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Zm8 3.5-1.7-.7a7 7 0 0 0-.5-1.3l.7-1.7-2.8-2.8-1.7.7a7 7 0 0 0-1.3-.5L12 4H8l-.7 1.7a7 7 0 0 0-1.3.5l-1.7-.7-2.8 2.8.7 1.7a7 7 0 0 0-.5 1.3L0 12v4l1.7.7a7 7 0 0 0 .5 1.3l-.7 1.7 2.8 2.8 1.7-.7a7 7 0 0 0 1.3.5L8 24h4l.7-1.7a7 7 0 0 0 1.3-.5l1.7.7 2.8-2.8-.7-1.7a7 7 0 0 0 .5-1.3L20 16v-4Z" transform="translate(2 -2) scale(.83)"/></svg>
@@ -48,6 +53,14 @@ app.innerHTML = `
       </button>
       <button class="icon-button refresh-button" id="refresh" aria-label="Refresh members">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5M4 18v-5h5M18.5 9A7 7 0 0 0 6.3 6.3L4 9m16 6-2.3 2.7A7 7 0 0 1 5.5 15"/></svg>
+      </button>
+    </section>
+
+    <section class="popover workspace-popover" id="workspace-popover" hidden>
+      <div class="workspace-options" id="workspace-options" role="listbox"></div>
+      <div class="settings-divider"></div>
+      <button class="workspace-add" id="add-workspace">
+        <span aria-hidden="true">+</span> Add a workspace
       </button>
     </section>
 
@@ -103,6 +116,10 @@ function element<T extends HTMLElement>(selector: string): T {
 
 const ui = {
   workspace: element<HTMLElement>("#workspace-name"),
+  workspaceToggle: element<HTMLButtonElement>("#workspace-toggle"),
+  workspacePopover: element<HTMLElement>("#workspace-popover"),
+  workspaceOptions: element<HTMLElement>("#workspace-options"),
+  addWorkspace: element<HTMLButtonElement>("#add-workspace"),
   channelName: element<HTMLElement>("#channel-name"),
   channelToggle: element<HTMLButtonElement>("#channel-toggle"),
   channelPopover: element<HTMLElement>("#channel-popover"),
@@ -127,6 +144,8 @@ const ui = {
 };
 
 let status: AppStatus;
+let workspaces: WorkspaceStatus[] = [];
+let activeTeamId = "";
 let channels: Channel[] = [];
 let members: Member[] = [];
 let selectedChannelId = "";
@@ -135,7 +154,7 @@ let panelVisible = true;
 let toastTimer: number | undefined;
 
 const scheduler = new PresenceScheduler({
-  request: (userId) => getPresence(userId, useMock),
+  request: (userId) => getPresence(activeTeamId, userId, useMock),
   onChange: patchPresence,
   onRateLimit: (seconds) => {
     showBanner(`Slack is rate limiting presence checks. Retrying in ${seconds}s.`, "warning");
@@ -146,6 +165,19 @@ const scheduler = new PresenceScheduler({
     ui.freshness.textContent = "Last-known presence";
   },
 });
+
+function activeWorkspace(): WorkspaceStatus | undefined {
+  return workspaces.find(({ teamId }) => teamId === activeTeamId);
+}
+
+function applyStatus(): void {
+  useMock = !isTauri || status.workspaces.length === 0;
+  workspaces = useMock ? structuredClone(mockWorkspaces) : status.workspaces;
+  const stillListed = workspaces.some(({ teamId }) => teamId === activeTeamId);
+  activeTeamId = useMock
+    ? (stillListed ? activeTeamId : workspaces[0]?.teamId ?? "")
+    : status.activeTeamId ?? workspaces[0]?.teamId ?? "";
+}
 
 function showBanner(message: string, tone: "info" | "warning" | "error" = "info"): void {
   ui.banner.textContent = message;
@@ -282,6 +314,41 @@ function renderSkeleton(): void {
   ui.emptyState.hidden = true;
 }
 
+function renderWorkspaceOptions(): void {
+  const nodes = workspaces.map((workspace) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "workspace-option";
+    button.role = "option";
+    button.dataset.selected = String(workspace.teamId === activeTeamId);
+
+    const avatar = document.createElement("span");
+    avatar.className = "workspace-avatar";
+    avatar.textContent = workspace.teamName.charAt(0).toUpperCase() || "?";
+
+    const copy = document.createElement("span");
+    copy.className = "workspace-copy";
+    const name = document.createElement("strong");
+    name.textContent = workspace.teamName;
+    copy.append(name);
+    if (!workspace.connected) {
+      const badge = document.createElement("small");
+      badge.textContent = "Reconnect required";
+      copy.append(badge);
+    }
+
+    button.append(avatar, copy);
+    if (workspace.teamId === activeTeamId) {
+      const check = document.createElement("i");
+      check.textContent = "✓";
+      button.append(check);
+    }
+    button.addEventListener("click", () => void selectWorkspace(workspace.teamId));
+    return button;
+  });
+  ui.workspaceOptions.replaceChildren(...nodes);
+}
+
 function renderChannelOptions(query = ""): void {
   const needle = query.trim().toLocaleLowerCase();
   const options = channels.filter((channel) => channel.name.toLocaleLowerCase().includes(needle));
@@ -316,15 +383,21 @@ function renderChannelOptions(query = ""): void {
 
 function renderConnectionSettings(): void {
   ui.alwaysOnTop.checked = status.alwaysOnTop;
-  ui.logout.hidden = !status.authenticated;
-  if (status.authenticated) {
-    ui.modeLabel.textContent = status.teamName ?? "Connected workspace";
-    ui.connectionNote.textContent = "Connected with a user token stored in macOS Keychain.";
+  const workspace = activeWorkspace();
+
+  if (!useMock && workspace) {
+    ui.modeLabel.textContent = workspace.teamName;
+    ui.logout.hidden = false;
+    ui.logout.textContent = `Disconnect ${workspace.teamName}`;
+    ui.connectionNote.textContent = workspace.connected
+      ? "Connected with a user token stored in macOS Keychain."
+      : "This workspace needs to be reconnected.";
     ui.connect.textContent = "Reconnect Slack";
-    ui.connect.disabled = false;
+    ui.connect.disabled = !status.credentialsConfigured;
     return;
   }
 
+  ui.logout.hidden = true;
   ui.modeLabel.textContent = "Demo workspace";
   ui.connect.textContent = "Connect Slack";
   if (!isTauri) {
@@ -345,7 +418,7 @@ async function loadChannelMembers(): Promise<void> {
   ui.refresh.classList.add("spinning");
   ui.refresh.disabled = true;
   try {
-    members = await loadMembers(selectedChannelId, useMock);
+    members = await loadMembers(activeTeamId, selectedChannelId, useMock);
     renderMembers();
     const cadence = cadenceForMemberCount(members.length);
     ui.freshness.textContent = cadence.staleNotice
@@ -368,23 +441,58 @@ async function loadChannelMembers(): Promise<void> {
 
 async function selectChannel(channelId: string): Promise<void> {
   selectedChannelId = channelId;
+  const workspace = activeWorkspace();
+  if (workspace) workspace.selectedChannelId = channelId;
   const channel = channels.find(({ id }) => id === channelId);
   ui.channelName.textContent = channel ? `# ${channel.name}` : "Choose a channel";
   closePopovers();
   renderChannelOptions();
-  if (!useMock) await saveSelectedChannel(channelId);
+  if (!useMock) await saveSelectedChannel(activeTeamId, channelId);
   await loadChannelMembers();
+}
+
+async function selectWorkspace(teamId: string): Promise<void> {
+  closePopovers();
+  if (teamId === activeTeamId) return;
+  scheduler.stop();
+  activeTeamId = teamId;
+  if (!useMock) {
+    try {
+      await setActiveWorkspace(teamId);
+    } catch (error) {
+      showBanner(error instanceof Error ? error.message : "Could not switch workspaces", "error");
+    }
+  }
+  await loadWorkspace();
 }
 
 async function loadWorkspace(): Promise<void> {
   scheduler.stop();
-  useMock = !status.authenticated;
-  ui.workspace.textContent = useMock ? "Demo · Acme Studio" : status.teamName ?? "Slack workspace";
-  channels = await listChannels(useMock);
-  const preferred = status.selectedChannelId;
-  const selected = channels.find(({ id }) => id === preferred) ?? channels[0];
-  selectedChannelId = selected?.id ?? "";
+  const workspace = activeWorkspace();
+  ui.workspace.textContent = workspace
+    ? useMock
+      ? `Demo · ${workspace.teamName}`
+      : workspace.teamName
+    : "Slack workspace";
+  renderWorkspaceOptions();
   renderConnectionSettings();
+
+  channels = [];
+  selectedChannelId = "";
+  try {
+    channels = await listChannels(activeTeamId, useMock);
+  } catch (error) {
+    members = [];
+    renderMembers();
+    ui.channelName.textContent = "Choose a channel";
+    renderChannelOptions();
+    ui.freshness.textContent = "Not connected";
+    showBanner(error instanceof Error ? error.message : "Could not load channels", "error");
+    return;
+  }
+
+  const preferred = workspace?.selectedChannelId;
+  const selected = channels.find(({ id }) => id === preferred) ?? channels[0];
   renderChannelOptions();
   if (selected) await selectChannel(selected.id);
   else {
@@ -394,13 +502,17 @@ async function loadWorkspace(): Promise<void> {
   }
 }
 
-function setPopover(name: "channels" | "settings"): void {
+function setPopover(name: "workspaces" | "channels" | "settings"): void {
+  const workspacesOpen = name === "workspaces" && ui.workspacePopover.hidden;
   const channelsOpen = name === "channels" && ui.channelPopover.hidden;
   const settingsOpen = name === "settings" && ui.settingsPopover.hidden;
+  ui.workspacePopover.hidden = !workspacesOpen;
   ui.channelPopover.hidden = !channelsOpen;
   ui.settingsPopover.hidden = !settingsOpen;
+  ui.workspaceToggle.setAttribute("aria-expanded", String(workspacesOpen));
   ui.channelToggle.setAttribute("aria-expanded", String(channelsOpen));
   ui.settingsToggle.setAttribute("aria-expanded", String(settingsOpen));
+  if (workspacesOpen) renderWorkspaceOptions();
   if (channelsOpen) {
     ui.channelSearch.value = "";
     renderChannelOptions();
@@ -409,19 +521,21 @@ function setPopover(name: "channels" | "settings"): void {
 }
 
 function closePopovers(): void {
+  ui.workspacePopover.hidden = true;
   ui.channelPopover.hidden = true;
   ui.settingsPopover.hidden = true;
+  ui.workspaceToggle.setAttribute("aria-expanded", "false");
   ui.channelToggle.setAttribute("aria-expanded", "false");
   ui.settingsToggle.setAttribute("aria-expanded", "false");
 }
 
 async function handleMemberClick(member: Member): Promise<void> {
-  if (useMock || !status.teamId) {
+  if (useMock) {
     showToast("DM deep links are ready in the connected desktop app");
     return;
   }
   try {
-    await openDm(status.teamId, member.id);
+    await openDm(activeTeamId, member.id);
     showToast(`Opening a DM with ${member.displayName}`);
   } catch (error) {
     showBanner(error instanceof Error ? error.message : "Could not open Slack", "error");
@@ -435,11 +549,35 @@ document.querySelector<HTMLElement>(".titlebar")?.addEventListener("mousedown", 
   void startWindowDrag();
 });
 
+async function beginOAuth(): Promise<void> {
+  try {
+    await startOAuth();
+    showToast("Finish authorization in your browser");
+  } catch (error) {
+    showBanner(error instanceof Error ? error.message : "Could not start OAuth", "error");
+    renderConnectionSettings();
+  }
+}
+
+ui.workspaceToggle.addEventListener("click", () => setPopover("workspaces"));
 ui.channelToggle.addEventListener("click", () => setPopover("channels"));
 ui.settingsToggle.addEventListener("click", () => setPopover("settings"));
 ui.channelSearch.addEventListener("input", () => renderChannelOptions(ui.channelSearch.value));
 ui.refresh.addEventListener("click", () => void loadChannelMembers());
 ui.hidePanel.addEventListener("click", () => void hidePanel());
+
+ui.addWorkspace.addEventListener("click", () => {
+  closePopovers();
+  if (!isTauri) {
+    showToast("Adding workspaces is available in the macOS desktop app");
+    return;
+  }
+  if (!status.credentialsConfigured) {
+    showBanner("Add your Client ID and Secret to .env, then restart the app. See SETUP.md.", "info");
+    return;
+  }
+  void beginOAuth();
+});
 
 ui.alwaysOnTop.addEventListener("change", async () => {
   const previous = status.alwaysOnTop;
@@ -458,22 +596,20 @@ ui.alwaysOnTop.addEventListener("change", async () => {
 ui.connect.addEventListener("click", async () => {
   ui.connect.disabled = true;
   ui.connect.textContent = "Opening browser…";
-  try {
-    await startOAuth();
-    showToast("Finish authorization in your browser");
-  } catch (error) {
-    showBanner(error instanceof Error ? error.message : "Could not start OAuth", "error");
-    renderConnectionSettings();
-  }
+  await beginOAuth();
 });
 
 ui.logout.addEventListener("click", async () => {
+  const workspaceName = activeWorkspace()?.teamName ?? "workspace";
   try {
-    await logout();
+    await disconnectWorkspace(activeTeamId);
     status = await getAppStatus();
+    applyStatus();
     closePopovers();
     await loadWorkspace();
-    showToast("Disconnected. Showing demo data.");
+    showToast(
+      useMock ? `Disconnected ${workspaceName}. Showing demo data.` : `Disconnected ${workspaceName}`,
+    );
   } catch (error) {
     showBanner(error instanceof Error ? error.message : "Could not disconnect", "error");
   }
@@ -483,6 +619,8 @@ document.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof Node)) return;
   if (
+    !ui.workspacePopover.contains(target) &&
+    !ui.workspaceToggle.contains(target) &&
     !ui.channelPopover.contains(target) &&
     !ui.channelToggle.contains(target) &&
     !ui.settingsPopover.contains(target) &&
@@ -496,6 +634,7 @@ async function initialize(): Promise<void> {
   renderSkeleton();
   try {
     status = await getAppStatus();
+    applyStatus();
     await loadWorkspace();
   } catch (error) {
     showBanner(error instanceof Error ? error.message : "Could not start the app", "error");
@@ -508,9 +647,10 @@ async function initialize(): Promise<void> {
       return;
     }
     status = await getAppStatus();
+    applyStatus();
     closePopovers();
     await loadWorkspace();
-    showToast(`Connected to ${status.teamName ?? "Slack"}`);
+    showToast(`Connected to ${activeWorkspace()?.teamName ?? "Slack"}`);
   });
 
   await listenForPanelVisibility(({ visible }) => {
