@@ -27,6 +27,11 @@ export class ReauthError extends Error {
 
 const BROWSER_STATUS: AppStatus = {
   credentialsConfigured: false,
+  hostedOAuthReady: false,
+  clientId: "",
+  hasClientSecret: false,
+  exchangeUrl: "",
+  oauthInProgress: false,
   workspaces: [],
   activeTeamId: null,
   alwaysOnTop: false,
@@ -100,6 +105,28 @@ export async function startOAuth(): Promise<void> {
     throw new Error("Connect Slack from the macOS desktop app.");
   }
   await native("start_oauth");
+}
+
+export async function cancelOAuth(): Promise<void> {
+  if (!isTauri) return;
+  await native("cancel_oauth");
+}
+
+export async function saveSlackCredentials(input: {
+  clientId: string;
+  clientSecret?: string;
+  exchangeUrl?: string;
+  clearSecret?: boolean;
+}): Promise<void> {
+  if (!isTauri) {
+    throw new Error("Credentials can only be saved in the macOS desktop app.");
+  }
+  await native("save_slack_credentials", {
+    clientId: input.clientId,
+    clientSecret: input.clientSecret,
+    exchangeUrl: input.exchangeUrl,
+    clearSecret: input.clearSecret ?? false,
+  });
 }
 
 export async function disconnectWorkspace(teamId: string): Promise<void> {

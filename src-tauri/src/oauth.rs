@@ -5,38 +5,89 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
+    sync::oneshot,
 };
 use url::Url;
 use uuid::Uuid;
 
 use crate::{
     error::{CommandError, CommandResult},
+    settings::Settings,
     slack, AppState,
 };
 
 const USER_SCOPES: &str = "users:read,channels:read,groups:read,im:read,mpim:read";
+pub const DEFAULT_REDIRECT_URI: &str = "http://127.0.0.1:53641/oauth/callback";
+pub const DEFAULT_SLACK_CLIENT_ID: &str = "";
+pub const DEFAULT_OAUTH_EXCHANGE_URL: &str =
+    "https://presence-for-slack-oauth.workers.dev/oauth/exchange";
 
 #[derive(Clone)]
 pub struct OAuthConfig {
     client_id: String,
-    client_secret: String,
+    client_secret: Option<String>,
+    exchange_url: Option<String>,
     pub redirect_uri: String,
 }
 
 impl OAuthConfig {
-    pub fn from_env() -> Option<Self> {
-        let client_id = std::env::var("PRESENCE_SLACK_CLIENT_ID").ok()?;
-        let client_secret = std::env::var("PRESENCE_SLACK_CLIENT_SECRET").ok()?;
-        let redirect_uri = std::env::var("PRESENCE_SLACK_REDIRECT_URI")
-            .unwrap_or_else(|_| "http://127.0.0.1:53641/oauth/callback".to_owned());
-        if client_id.trim().is_empty() || client_secret.trim().is_empty() {
+    pub fn from_settings(settings: &Settings) -> Option<Self> {
+        Self::from_values(
+            first_filled([
+                settings.slack_client_id.clone(),
+                std::env::var("PRESENCE_SLACK_CLIENT_ID").ok(),
+                Some(DEFAULT_SLACK_CLIENT_ID.to_owned()),
+            ]),
+            first_filled([
+                settings.slack_client_secret.clone(),
+                std::env::var("PRESENCE_SLACK_CLIENT_SECRET").ok(),
+            ]),
+            first_filled([
+                settings.slack_oauth_exchange_url.clone(),
+                std::env::var("PRESENCE_SLACK_OAUTH_EXCHANGE_URL").ok(),
+                Some(DEFAULT_OAUTH_EXCHANGE_URL.to_owned()),
+            ]),
+            std::env::var("PRESENCE_SLACK_REDIRECT_URI")
+                .ok()
+                .and_then(nonempty)
+                .unwrap_or_else(|| DEFAULT_REDIRECT_URI.to_owned()),
+        )
+    }
+
+    pub fn from_values(
+        client_id: Option<String>,
+        client_secret: Option<String>,
+        exchange_url: Option<String>,
+        redirect_uri: String,
+    ) -> Option<Self> {
+        let client_id = client_id.filter(|value| !is_placeholder_client_id(value))?;
+        let client_secret = client_secret.filter(|value| !is_placeholder_secret(value));
+        let exchange_url = exchange_url.filter(|value| !value.trim().is_empty());
+        if client_secret.is_none() && exchange_url.is_none() {
             return None;
         }
         Some(Self {
             client_id,
             client_secret,
+            exchange_url,
             redirect_uri,
         })
+    }
+
+    pub fn uses_hosted_exchange(&self) -> bool {
+        self.client_secret.is_none() && self.exchange_url.is_some()
+    }
+
+    pub fn public_client_id(&self) -> &str {
+        &self.client_id
+    }
+
+    pub fn exchange_url(&self) -> Option<&str> {
+        self.exchange_url.as_deref()
+    }
+
+    pub fn has_client_secret(&self) -> bool {
+        self.client_secret.is_some()
     }
 }
 
@@ -50,6 +101,7 @@ struct OAuthEvent {
 struct OAuthResponse {
     ok: bool,
     error: Option<String>,
+    access_token: Option<String>,
     authed_user: Option<AuthedUser>,
 }
 
@@ -59,38 +111,74 @@ struct AuthedUser {
 }
 
 pub async fn start(app: AppHandle) -> CommandResult<()> {
-    let config = OAuthConfig::from_env().ok_or_else(|| {
-        CommandError::message("Slack Client ID and Secret are not configured. See SETUP.md.")
+    let state = app.state::<AppState>();
+    let settings = state.settings.read()?;
+    let config = OAuthConfig::from_settings(&settings).ok_or_else(|| {
+        CommandError::message(
+            "Slack is not configured. Add a Client ID and Secret in Settings to connect.",
+        )
     })?;
+    drop(settings);
+
     let redirect = validate_redirect(&config.redirect_uri)?;
     let port = redirect
         .port_or_known_default()
         .ok_or_else(|| CommandError::message("The OAuth callback needs a port"))?;
+    {
+        let abort = state
+            .oauth_abort
+            .lock()
+            .map_err(|_| CommandError::message("Could not start Slack authorization"))?;
+        if abort.is_some() {
+            return Err(CommandError::message(
+                "Authorization is already in progress. Finish it in your browser or cancel.",
+            ));
+        }
+    }
+
     let listener = TcpListener::bind(("127.0.0.1", port))
         .await
         .map_err(|_| {
             CommandError::message(
-                "Authorization is already in progress, or the OAuth callback port is in use. Finish it in your browser or try again shortly.",
+                "Authorization is already in progress, or the OAuth callback port is in use. Finish it in your browser, cancel, or try again shortly.",
             )
         })?;
 
-    let state = Uuid::new_v4().to_string();
+    let state_token = Uuid::new_v4().to_string();
     let mut authorize = Url::parse("https://slack.com/oauth/v2/authorize")
         .map_err(|_| CommandError::message("Could not build the Slack authorization URL"))?;
     authorize.query_pairs_mut().extend_pairs([
         ("client_id", config.client_id.as_str()),
         ("user_scope", USER_SCOPES),
         ("redirect_uri", config.redirect_uri.as_str()),
-        ("state", state.as_str()),
+        ("state", state_token.as_str()),
     ]);
+
+    let (cancel_tx, cancel_rx) = oneshot::channel();
+    {
+        let mut abort = state
+            .oauth_abort
+            .lock()
+            .map_err(|_| CommandError::message("Could not start Slack authorization"))?;
+        if abort.is_some() {
+            return Err(CommandError::message(
+                "Authorization is already in progress. Finish it in your browser or cancel.",
+            ));
+        }
+        *abort = Some(cancel_tx);
+    }
 
     Command::new("open")
         .arg(authorize.as_str())
         .spawn()
-        .map_err(|_| CommandError::message("Could not open the authorization page"))?;
+        .map_err(|_| {
+            let _ = take_oauth_abort(&app);
+            CommandError::message("Could not open the authorization page")
+        })?;
 
     tauri::async_runtime::spawn(async move {
-        let result = complete(listener, &app, config, state).await;
+        let result = complete(listener, &app, config, state_token, cancel_rx).await;
+        let _ = take_oauth_abort(&app);
         let payload = match result {
             Ok(team_name) => OAuthEvent {
                 ok: true,
@@ -106,11 +194,38 @@ pub async fn start(app: AppHandle) -> CommandResult<()> {
     Ok(())
 }
 
+pub fn cancel(app: &AppHandle) -> CommandResult<()> {
+    match take_oauth_abort(app) {
+        Some(sender) => {
+            let _ = sender.send(());
+            Ok(())
+        }
+        None => Err(CommandError::message("No Slack authorization is in progress")),
+    }
+}
+
+pub fn in_progress(state: &AppState) -> bool {
+    state
+        .oauth_abort
+        .lock()
+        .map(|guard| guard.is_some())
+        .unwrap_or(false)
+}
+
+fn take_oauth_abort(app: &AppHandle) -> Option<oneshot::Sender<()>> {
+    app.state::<AppState>()
+        .oauth_abort
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take())
+}
+
 async fn complete(
     listener: TcpListener,
     app: &AppHandle,
     config: OAuthConfig,
     expected_state: String,
+    mut cancel: oneshot::Receiver<()>,
 ) -> CommandResult<String> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
     loop {
@@ -120,8 +235,13 @@ async fn complete(
                 "Slack authorization timed out. Try connecting again.",
             ));
         }
-        let (mut stream, _) = tokio::time::timeout(deadline - now, listener.accept())
-            .await
+        let accepted = tokio::select! {
+            _ = &mut cancel => {
+                return Err(CommandError::message("Slack authorization was cancelled."));
+            }
+            accepted = tokio::time::timeout(deadline - now, listener.accept()) => accepted,
+        };
+        let (mut stream, _) = accepted
             .map_err(|_| {
                 CommandError::message("Slack authorization timed out. Try connecting again.")
             })?
@@ -181,41 +301,81 @@ async fn handle_callback(
         .ok_or_else(|| CommandError::message("Slack did not return an authorization code"))?;
 
     let state = app.state::<AppState>();
-    let oauth: OAuthResponse = state
-        .client
-        .post("https://slack.com/api/oauth.v2.access")
-        .form(&[
-            ("client_id", config.client_id.as_str()),
-            ("client_secret", config.client_secret.as_str()),
-            ("code", code.as_str()),
-            ("redirect_uri", config.redirect_uri.as_str()),
-        ])
-        .send()
-        .await
-        .map_err(|_| CommandError::message("Could not exchange the Slack authorization code"))?
-        .json()
-        .await
-        .map_err(|_| CommandError::message("Slack returned an unexpected OAuth response"))?;
+    let token = exchange_code(&state.client, &state.exchange_client, &config, code).await?;
+    let auth = slack::auth_test(&state.client, &token).await?;
+    crate::adopt_workspace(&state, &auth.team_id, &auth.team, token).await?;
+    Ok(auth.team)
+}
+
+pub(crate) async fn exchange_code(
+    slack_client: &reqwest::Client,
+    exchange_client: &reqwest::Client,
+    config: &OAuthConfig,
+    code: &str,
+) -> CommandResult<String> {
+    let oauth = if let Some(secret) = &config.client_secret {
+        slack_client
+            .post("https://slack.com/api/oauth.v2.access")
+            .form(&[
+                ("client_id", config.client_id.as_str()),
+                ("client_secret", secret.as_str()),
+                ("code", code),
+                ("redirect_uri", config.redirect_uri.as_str()),
+            ])
+            .send()
+            .await
+            .map_err(|_| CommandError::message("Could not exchange the Slack authorization code"))?
+            .json()
+            .await
+            .map_err(|_| CommandError::message("Slack returned an unexpected OAuth response"))?
+    } else {
+        let exchange_url = config.exchange_url.as_deref().ok_or_else(|| {
+            CommandError::message("Slack is not configured. Add credentials in Settings.")
+        })?;
+        validate_exchange_url(exchange_url)?;
+        exchange_client
+            .post(exchange_url)
+            .json(&serde_json::json!({
+                "code": code,
+                "redirect_uri": config.redirect_uri,
+            }))
+            .send()
+            .await
+            .map_err(|_| {
+                CommandError::message("Could not reach the Slack OAuth exchange service")
+            })?
+            .json()
+            .await
+            .map_err(|_| {
+                CommandError::message("The Slack OAuth exchange service returned an unexpected response")
+            })?
+    };
+
+    token_from_oauth(oauth)
+}
+
+fn token_from_oauth(oauth: OAuthResponse) -> CommandResult<String> {
     if !oauth.ok {
         return Err(CommandError::message(format!(
             "Slack OAuth error: {}",
             oauth.error.as_deref().unwrap_or("unknown_error")
         )));
     }
-    let token = oauth
-        .authed_user
-        .and_then(|user| user.access_token)
+    oauth
+        .access_token
         .filter(|token| token.starts_with("xoxp-"))
-        .ok_or_else(|| CommandError::message("Slack did not return a user token"))?;
-
-    let auth = slack::auth_test(&state.client, &token).await?;
-    crate::adopt_workspace(&state, &auth.team_id, &auth.team, token).await?;
-    Ok(auth.team)
+        .or_else(|| {
+            oauth
+                .authed_user
+                .and_then(|user| user.access_token)
+                .filter(|token| token.starts_with("xoxp-"))
+        })
+        .ok_or_else(|| CommandError::message("Slack did not return a user token"))
 }
 
-fn validate_redirect(redirect_uri: &str) -> CommandResult<Url> {
+pub fn validate_redirect(redirect_uri: &str) -> CommandResult<Url> {
     let redirect = Url::parse(redirect_uri)
-        .map_err(|_| CommandError::message("PRESENCE_SLACK_REDIRECT_URI is invalid"))?;
+        .map_err(|_| CommandError::message("The OAuth callback URL is invalid"))?;
     if redirect.scheme() != "http" || redirect.host_str() != Some("127.0.0.1") {
         return Err(CommandError::message(
             "The OAuth callback must use http://127.0.0.1",
@@ -224,11 +384,25 @@ fn validate_redirect(redirect_uri: &str) -> CommandResult<Url> {
     Ok(redirect)
 }
 
+pub fn validate_exchange_url(exchange_url: &str) -> CommandResult<Url> {
+    let url = Url::parse(exchange_url)
+        .map_err(|_| CommandError::message("The OAuth exchange URL is invalid"))?;
+    let https = url.scheme() == "https";
+    let loopback_http = url.scheme() == "http"
+        && matches!(url.host_str(), Some("127.0.0.1") | Some("localhost"));
+    if !https && !loopback_http {
+        return Err(CommandError::message(
+            "The OAuth exchange URL must be https, or http on 127.0.0.1 for local development",
+        ));
+    }
+    Ok(url)
+}
+
 async fn write_browser_response(stream: &mut TcpStream, success: bool) -> std::io::Result<()> {
     let (title, detail) = if success {
         (
             "Connected",
-            "You can close this tab and return to Presence for Slack.",
+            "You can close this tab. Presence for Slack will finish connecting on its own.",
         )
     } else {
         (
@@ -247,10 +421,46 @@ async fn write_browser_response(stream: &mut TcpStream, success: bool) -> std::i
     stream.write_all(response.as_bytes()).await
 }
 
+fn nonempty(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    }
+}
+
+fn first_filled(values: impl IntoIterator<Item = Option<String>>) -> Option<String> {
+    values.into_iter().flatten().find_map(nonempty)
+}
+
+pub fn is_placeholder_client_id(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("your-client-id")
+        || trimmed.eq_ignore_ascii_case("YOUR_SLACK_CLIENT_ID")
+        || trimmed == "1234567890.1234567890"
+        || trimmed.to_ascii_lowercase().contains("replace")
+}
+
+fn is_placeholder_secret(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.is_empty() || trimmed.to_ascii_lowercase().contains("replace")
+}
+
+pub fn exchange_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent("Presence-for-Slack/0.1.0")
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("exchange HTTP client")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::is_oauth_callback;
+    use super::*;
     use std::collections::HashMap;
+    use tokio::io::AsyncWriteExt;
 
     #[test]
     fn ignores_stray_connections_without_oauth_params() {
@@ -275,5 +485,140 @@ mod tests {
             "state".into(),
             "nonce".into()
         )])));
+    }
+
+    #[test]
+    fn empty_default_client_id_is_not_configured() {
+        assert!(OAuthConfig::from_values(
+            Some(DEFAULT_SLACK_CLIENT_ID.to_owned()),
+            None,
+            Some(DEFAULT_OAUTH_EXCHANGE_URL.to_owned()),
+            DEFAULT_REDIRECT_URI.to_owned(),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn example_env_placeholders_are_not_configured() {
+        assert!(OAuthConfig::from_values(
+            Some("1234567890.1234567890".into()),
+            Some("replace-with-your-client-secret".into()),
+            None,
+            DEFAULT_REDIRECT_URI.to_owned(),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn hosted_path_needs_a_real_client_id_and_exchange_url() {
+        let config = OAuthConfig::from_values(
+            Some("1234567890.9876543210".into()),
+            None,
+            Some("https://presence-for-slack-oauth.example.workers.dev/oauth/exchange".into()),
+            DEFAULT_REDIRECT_URI.to_owned(),
+        )
+        .expect("hosted config");
+        assert!(config.uses_hosted_exchange());
+        assert!(!config.has_client_secret());
+        assert_eq!(config.public_client_id(), "1234567890.9876543210");
+    }
+
+    #[test]
+    fn byo_secret_uses_direct_slack_exchange() {
+        let config = OAuthConfig::from_values(
+            Some("1234567890.9876543210".into()),
+            Some("app-secret".into()),
+            Some(DEFAULT_OAUTH_EXCHANGE_URL.to_owned()),
+            DEFAULT_REDIRECT_URI.to_owned(),
+        )
+        .expect("byo config");
+        assert!(!config.uses_hosted_exchange());
+        assert!(config.has_client_secret());
+    }
+
+    #[test]
+    fn exchange_url_must_be_https_or_loopback_http() {
+        assert!(validate_exchange_url(
+            "https://presence-for-slack-oauth.workers.dev/oauth/exchange"
+        )
+        .is_ok());
+        assert!(validate_exchange_url("http://127.0.0.1:8787/oauth/exchange").is_ok());
+        assert!(validate_exchange_url("http://example.com/oauth/exchange").is_err());
+    }
+
+    #[test]
+    fn reads_token_from_worker_or_slack_shape() {
+        let hosted = token_from_oauth(OAuthResponse {
+            ok: true,
+            error: None,
+            access_token: Some("xoxp-hosted".into()),
+            authed_user: None,
+        })
+        .expect("hosted token");
+        assert_eq!(hosted, "xoxp-hosted");
+
+        let slack = token_from_oauth(OAuthResponse {
+            ok: true,
+            error: None,
+            access_token: None,
+            authed_user: Some(AuthedUser {
+                access_token: Some("xoxp-direct".into()),
+            }),
+        })
+        .expect("slack token");
+        assert_eq!(slack, "xoxp-direct");
+
+        assert!(token_from_oauth(OAuthResponse {
+            ok: true,
+            error: None,
+            access_token: Some("xoxb-bot".into()),
+            authed_user: None,
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn hosted_exchange_talks_to_a_loopback_worker() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let port = listener.local_addr().expect("addr").port();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let mut buffer = vec![0_u8; 4096];
+                let _ = stream.read(&mut buffer).await.expect("read");
+                let request = String::from_utf8_lossy(&buffer);
+                assert!(request.contains("POST"));
+                assert!(request.contains("slack-code"));
+                let body = r#"{"ok":true,"access_token":"xoxp-from-worker"}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes()).await.expect("write");
+            });
+
+            let config = OAuthConfig::from_values(
+                Some("123.456".into()),
+                None,
+                Some(format!("http://127.0.0.1:{port}/oauth/exchange")),
+                DEFAULT_REDIRECT_URI.to_owned(),
+            )
+            .expect("config");
+            let slack_client = reqwest::Client::builder()
+                .https_only(true)
+                .build()
+                .expect("slack client");
+            let exchange_client = exchange_http_client();
+            let token = exchange_code(&slack_client, &exchange_client, &config, "slack-code")
+                .await
+                .expect("exchange");
+            assert_eq!(token, "xoxp-from-worker");
+            server.await.expect("server");
+        });
     }
 }

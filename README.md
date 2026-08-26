@@ -17,14 +17,18 @@ Open the printed localhost URL. That preview cannot talk to Slack; it shows the 
 
 ## Run the macOS app
 
-Install the current stable Rust toolchain and Apple's Xcode Command Line Tools, then follow [SETUP.md](SETUP.md) to create a Slack app and add local credentials.
+Install the current stable Rust toolchain and Apple's Xcode Command Line Tools. Then:
 
 ```sh
 npm install
 npm run tauri dev
 ```
 
-Without `.env`, the desktop app stays on the connect empty state until you add Client ID and Secret and restart. Useful validation commands:
+Click **Connect Slack**. Slack's own OAuth runs in the browser, including any 2FA. When you approve, the app finishes connecting on its own. No `.env` file and no restart.
+
+The shared Slack app plus the hosted exchange worker must be configured for that one-click path. If this build does not include them yet, Settings shows Client ID and Secret fields (applied immediately, no restart). Creating your own Slack app is documented under **Advanced / self-hosting** in [SETUP.md](SETUP.md). `.env` remains a local-dev override only.
+
+Useful validation commands:
 
 ```sh
 npm test
@@ -37,6 +41,6 @@ The first unsigned local build may prompt macOS to allow Keychain access. Packag
 
 ## Privacy and security
 
-Slack user tokens are stored only in macOS Keychain, one entry per connected workspace. They are never sent to the frontend, placed in `localStorage`, or logged. Local app credentials come from a gitignored `.env` file. The app does not read Slack cookies, use internal Slack endpoints, send messages, or request `chat:write`.
+Slack user tokens are stored only in macOS Keychain, one entry per connected workspace. They are never sent to the frontend, placed in `localStorage`, or logged. The shared Slack app's client secret lives only in the Cloudflare Worker that exchanges the OAuth code. The resulting `xoxp` user token is passed back to the app once and written to Keychain. The app does not read Slack cookies, use internal Slack endpoints, send messages, or request `chat:write`.
 
 Not affiliated with or endorsed by Slack Technologies / Salesforce. Slack is a trademark of Salesforce.

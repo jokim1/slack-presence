@@ -1,14 +1,32 @@
 # Connect Presence for Slack to a workspace
 
-The app is intended for a local installation where each user supplies their own Slack app credentials. Do not commit `.env` or share its client secret.
+Click **Connect Slack** in the app. Slack's authorization page opens in your browser. Sign in (and complete 2FA if asked). The app listens on a local loopback callback, validates OAuth `state`, and stores the user token in macOS Keychain. You do not paste a link or token, and you do not restart the app.
 
-## 1. Create the Slack app
+Until a workspace is connected, the panel shows a connect empty state. While Slack's page is open, the panel shows that it is waiting and a **Cancel** control. If a workspace is already connected, Connect is not offered again for that workspace; use **Add a workspace** in the switcher to connect another one.
+
+If your workspace requires admin approval, Slack will keep the install pending until an administrator approves it. If you change scopes later, reconnect the app so Slack grants the updated set.
+
+## Connect more workspaces (optional)
+
+Click the workspace name under the panel title and choose **Add a workspace**. On Slack's authorization page, use the workspace picker in the top-right corner to select the other workspace before approving.
+
+A Slack app can only be installed to workspaces beyond the one it was created in after distribution is enabled: in the app settings, open **Manage Distribution**, complete the checklist, and choose **Activate Public Distribution**.
+
+The app stores one `xoxp` token per workspace in macOS Keychain and remembers each workspace's selected channel. Switch between workspaces from the same menu; **Disconnect** in settings removes only the active workspace.
+
+Disconnecting a workspace removes its Keychain token and returns that slot to a reconnect/empty state. It does not invent sample people. If Slack returns `token_revoked`, `token_expired`, `invalid_auth`, a missing user scope, or a network failure, the panel shows that error and a reconnect action instead of falling back to local data.
+
+## Advanced / self-hosting
+
+Use this path if you are running your own Slack app, or if this build does not yet include the shared app (Settings then shows credential fields instead of a dead Connect button).
+
+### Create a Slack app
 
 1. Go to [api.slack.com/apps](https://api.slack.com/apps) and choose **Create New App**.
 2. Choose **From scratch**.
-3. Name the app `Presence for Slack`, select the workspace you want to use, and create it. Public distribution is not required.
+3. Name the app `Presence for Slack`, select the workspace you want to use, and create it. Public distribution is not required unless you want to install it on other workspaces.
 
-## 2. Add the user scopes
+### Add the user scopes
 
 1. Open **OAuth & Permissions** in the app settings.
 2. Under **Scopes > User Token Scopes**, add exactly:
@@ -19,7 +37,7 @@ The app is intended for a local installation where each user supplies their own 
    - `mpim:read`
 3. Do not add bot scopes or `chat:write`. This app opens Slack with a deep link and never sends messages.
 
-## 3. Register the callback
+### Register the callback
 
 Under **OAuth & Permissions > Redirect URLs**, add this exact URL and save it:
 
@@ -29,41 +47,27 @@ http://127.0.0.1:53641/oauth/callback
 
 Slack requires the `redirect_uri` used during authorization and code exchange to exactly match this value. The app listens only on loopback for the callback and validates the OAuth `state` value.
 
-## 4. Add local credentials
+### Paste credentials in the app
 
-Copy the example file and open the new `.env`:
+Open **Settings** in Presence for Slack and use **Use your own Slack app** (or the credential fields shown when one-click is unavailable). Paste the **Client ID** and **Client Secret** from **Basic Information > App Credentials**. They are applied immediately; do not restart.
 
-```sh
-cp .env.example .env
-```
+The secret stays in local app settings on this Mac. The resulting `xoxp` user token is written to macOS Keychain, never to `.env` or browser storage.
 
-From **Basic Information > App Credentials**, paste the **Client ID** and **Client Secret** into:
+Optional: set an OAuth exchange URL if you are pointing at your own `oauth-worker/` instead of exchanging the code with Slack directly.
+
+### Local-dev `.env` (optional)
+
+`.env` is still read at process start for development only. Copy `.env.example` if you want that override. Changing `.env` still requires a restart; the in-app Settings fields do not.
 
 ```dotenv
 PRESENCE_SLACK_CLIENT_ID=your-client-id
 PRESENCE_SLACK_CLIENT_SECRET=your-client-secret
+PRESENCE_SLACK_OAUTH_EXCHANGE_URL=http://127.0.0.1:8787/oauth/exchange
 PRESENCE_SLACK_REDIRECT_URI=http://127.0.0.1:53641/oauth/callback
 ```
 
-The secret remains in the gitignored local file and process memory. The resulting `xoxp` user token is written to macOS Keychain, never to `.env` or browser storage. A distributed multi-user build would need an OAuth backend to keep a shared client secret out of the app; that is not part of this MVP.
+Do not commit `.env` or share its client secret.
 
-## 5. Authorize and run
+### Hosted exchange worker
 
-```sh
-npm install
-npm run tauri dev
-```
-
-Until a workspace is connected, the panel shows a connect empty state (credential setup if `.env` is missing, or **Connect Slack** once credentials are present). Open settings or the empty-state button, choose **Connect Slack**, and approve the user scopes. The browser returns to the local callback, after which the panel loads the channels you belong to through `users.conversations`.
-
-Disconnecting a workspace removes its Keychain token and returns that slot to a reconnect/empty state. It does not invent sample people. If Slack returns `token_revoked`, `token_expired`, `invalid_auth`, a missing user scope, or a network failure, the panel shows that error and a reconnect action instead of falling back to local data.
-
-If your workspace requires admin approval, Slack will keep the install pending until an administrator approves it. If you change scopes later, reconnect the app so Slack grants the updated set.
-
-## 6. Connect more workspaces (optional)
-
-Click the workspace name under the panel title and choose **Add a workspace**. On Slack's authorization page, use the workspace picker in the top-right corner to select the other workspace before approving.
-
-A Slack app can only be installed to workspaces beyond the one it was created in after distribution is enabled: in the app settings, open **Manage Distribution**, complete the checklist, and choose **Activate Public Distribution**. The `.env` credentials stay the same.
-
-The app stores one `xoxp` token per workspace in macOS Keychain and remembers each workspace's selected channel. Switch between workspaces from the same menu; **Disconnect** in settings removes only the active workspace.
+The shared one-click path keeps the Slack client secret in a Cloudflare Worker (`oauth-worker/`). The desktop app holds only the public client ID, sends the OAuth code to the worker, and stores the returned user token in Keychain. The worker does not store tokens. Deploy steps live in `oauth-worker/wrangler.toml`.

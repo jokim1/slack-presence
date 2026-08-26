@@ -1,0 +1,13 @@
+name = "presence-for-slack-oauth"
+main = "src/index.ts"
+compatibility_date = "2026-08-26"
+
+# Public client ID can live as a var. The client secret MUST be a secret:
+#   npx wrangler secret put SLACK_CLIENT_SECRET
+#   npx wrangler secret put SLACK_CLIENT_ID
+#
+# Optional local override for tests (mock Slack):
+#   SLACK_API_BASE=http://127.0.0.1:8788 npx wrangler dev
+
+[vars]
+SLACK_API_BASE = "https://slack.com/api"

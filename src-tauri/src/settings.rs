@@ -24,6 +24,12 @@ pub struct Settings {
     pub always_on_top: bool,
     pub window_x: Option<i32>,
     pub window_y: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slack_client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slack_client_secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slack_oauth_exchange_url: Option<String>,
     // Single-workspace fields from the MVP settings file, kept only so an old
     // settings.json can be migrated on load. Never written back.
     #[serde(skip_serializing)]
@@ -217,5 +223,15 @@ mod tests {
 
         assert!(!settings.migrate());
         assert_eq!(settings.active_team_id.as_deref(), Some("T1AAAAAA"));
+    }
+
+    #[test]
+    fn omits_unset_slack_credentials_from_disk() {
+        let settings = Settings::default();
+        let serialized: serde_json::Value =
+            serde_json::to_value(&settings).expect("serialize settings");
+        assert!(serialized.get("slackClientId").is_none());
+        assert!(serialized.get("slackClientSecret").is_none());
+        assert!(serialized.get("slackOauthExchangeUrl").is_none());
     }
 }
