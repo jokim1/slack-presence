@@ -96,6 +96,7 @@ struct ResponseMetadata {
 
 #[derive(Deserialize)]
 struct ChannelsResponse {
+    #[serde(default)]
     channels: Vec<RawChannel>,
     response_metadata: Option<ResponseMetadata>,
 }
@@ -110,12 +111,14 @@ struct RawChannel {
 
 #[derive(Deserialize)]
 struct MembersResponse {
+    #[serde(default)]
     members: Vec<String>,
     response_metadata: Option<ResponseMetadata>,
 }
 
 #[derive(Deserialize)]
 struct UsersResponse {
+    #[serde(default)]
     members: Vec<SlackUser>,
     response_metadata: Option<ResponseMetadata>,
 }
@@ -135,12 +138,14 @@ pub async fn list_channels(client: &Client, token: &str) -> CommandResult<Vec<Ch
     let mut cursor = String::new();
 
     loop {
-        let query = [
-            ("types", "public_channel,private_channel".to_owned()),
-            ("exclude_archived", "true".to_owned()),
-            ("limit", "200".to_owned()),
-            ("cursor", cursor.clone()),
-        ];
+        let query = paginated_query(
+            [
+                ("types", "public_channel,private_channel".to_owned()),
+                ("exclude_archived", "true".to_owned()),
+                ("limit", "200".to_owned()),
+            ],
+            &cursor,
+        );
         let response: ChannelsResponse =
             slack_get(client, token, "users.conversations", &query).await?;
         channels.extend(response.channels.into_iter().map(|channel| Channel {
@@ -257,11 +262,13 @@ async fn list_member_ids(
     let mut cursor = String::new();
 
     loop {
-        let query = [
-            ("channel", channel_id.to_owned()),
-            ("limit", "200".to_owned()),
-            ("cursor", cursor.clone()),
-        ];
+        let query = paginated_query(
+            [
+                ("channel", channel_id.to_owned()),
+                ("limit", "200".to_owned()),
+            ],
+            &cursor,
+        );
         let response: MembersResponse =
             slack_get(client, token, "conversations.members", &query).await?;
         members.extend(response.members);
@@ -284,7 +291,7 @@ async fn ensure_profiles(
     let mut users = HashMap::new();
     let mut cursor = String::new();
     loop {
-        let query = [("limit", "200".to_owned()), ("cursor", cursor.clone())];
+        let query = paginated_query([("limit", "200".to_owned())], &cursor);
         let response: UsersResponse = slack_get(client, token, "users.list", &query).await?;
         users.extend(
             response
@@ -308,6 +315,17 @@ async fn user_info(client: &Client, token: &str, user_id: &str) -> CommandResult
     let query = [("user", user_id.to_owned())];
     let response: UserInfoResponse = slack_get(client, token, "users.info", &query).await?;
     Ok(response.user)
+}
+
+fn paginated_query(
+    pairs: impl IntoIterator<Item = (&'static str, String)>,
+    cursor: &str,
+) -> Vec<(&'static str, String)> {
+    let mut query: Vec<(&'static str, String)> = pairs.into_iter().collect();
+    if !cursor.is_empty() {
+        query.push(("cursor", cursor.to_owned()));
+    }
+    query
 }
 
 fn next_cursor(metadata: Option<ResponseMetadata>) -> String {
@@ -370,7 +388,7 @@ pub(crate) fn slack_error(code: &str) -> CommandError {
         "invalid_auth" | "token_revoked" | "token_expired" | "account_inactive" | "not_authed" => {
             CommandError::reauth("Slack authorization expired. Reconnect the workspace.")
         }
-        "missing_scope" => CommandError::message(
+        "missing_scope" => CommandError::reauth(
             "The Slack app is missing a required user scope. Update it and reconnect.",
         ),
         "ratelimited" => CommandError::RateLimited {
@@ -407,13 +425,41 @@ mod tests {
     }
 
     #[test]
-    fn missing_scope_is_actionable() {
+    fn missing_scope_asks_to_reconnect() {
         match slack_error("missing_scope") {
-            CommandError::Message { message } => {
+            CommandError::Reauth { message } => {
                 assert!(message.contains("required user scope"));
             }
-            other => panic!("expected a message, got {other:?}"),
+            other => panic!("expected reauth, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn next_cursor_skips_blank_pages_and_keeps_real_cursors() {
+        assert_eq!(super::next_cursor(None), "");
+        assert_eq!(
+            super::next_cursor(Some(super::ResponseMetadata {
+                next_cursor: "  ".into(),
+            })),
+            ""
+        );
+        assert_eq!(
+            super::next_cursor(Some(super::ResponseMetadata {
+                next_cursor: "dGVhbTpDMDY=".into(),
+            })),
+            "dGVhbTpDMDY="
+        );
+    }
+
+    #[test]
+    fn first_page_omits_empty_cursor() {
+        let first = super::paginated_query([("limit", "200".into())], "");
+        assert_eq!(first, vec![("limit", "200".into())]);
+        let next = super::paginated_query([("limit", "200".into())], "dGVhbTpDMDY=");
+        assert_eq!(
+            next,
+            vec![("limit", "200".into()), ("cursor", "dGVhbTpDMDY=".into())]
+        );
     }
 
     #[test]

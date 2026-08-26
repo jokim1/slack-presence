@@ -184,6 +184,27 @@ mod tests {
     }
 
     #[test]
+    fn first_run_without_a_settings_file_stays_empty() {
+        let path = std::env::temp_dir().join(format!(
+            "presence-for-slack-missing-settings-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        assert!(!path.exists());
+        let store = super::SettingsStore::load(path.clone());
+        let settings = store.read().expect("read empty settings");
+        assert!(settings.workspaces.is_empty());
+        assert!(settings.active_team_id.is_none());
+        assert!(
+            !path.exists(),
+            "first run must not write settings until something is saved"
+        );
+    }
+
+    #[test]
     fn keeps_valid_multi_workspace_settings_unchanged() {
         let mut settings: Settings = serde_json::from_str(
             r#"{

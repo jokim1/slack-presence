@@ -68,7 +68,11 @@ pub async fn start(app: AppHandle) -> CommandResult<()> {
         .ok_or_else(|| CommandError::message("The OAuth callback needs a port"))?;
     let listener = TcpListener::bind(("127.0.0.1", port))
         .await
-        .map_err(|_| CommandError::message("The OAuth callback port is already in use"))?;
+        .map_err(|_| {
+            CommandError::message(
+                "Authorization is already in progress, or the OAuth callback port is in use. Finish it in your browser or try again shortly.",
+            )
+        })?;
 
     let state = Uuid::new_v4().to_string();
     let mut authorize = Url::parse("https://slack.com/oauth/v2/authorize")
@@ -108,14 +112,34 @@ async fn complete(
     config: OAuthConfig,
     expected_state: String,
 ) -> CommandResult<String> {
-    let (mut stream, _) = tokio::time::timeout(Duration::from_secs(180), listener.accept())
-        .await
-        .map_err(|_| CommandError::message("Slack authorization timed out. Try connecting again."))?
-        .map_err(|_| CommandError::message("Could not receive the OAuth callback"))?;
-    let callback = read_callback(&mut stream).await?;
-    let result = handle_callback(app, config, expected_state, callback).await;
-    let _ = write_browser_response(&mut stream, result.is_ok()).await;
-    result
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(CommandError::message(
+                "Slack authorization timed out. Try connecting again.",
+            ));
+        }
+        let (mut stream, _) = tokio::time::timeout(deadline - now, listener.accept())
+            .await
+            .map_err(|_| {
+                CommandError::message("Slack authorization timed out. Try connecting again.")
+            })?
+            .map_err(|_| CommandError::message("Could not receive the OAuth callback"))?;
+        let callback = match read_callback(&mut stream).await {
+            Ok(params) if is_oauth_callback(&params) => params,
+            Ok(_) | Err(_) => continue,
+        };
+        let result = handle_callback(app, config, expected_state, callback).await;
+        let _ = write_browser_response(&mut stream, result.is_ok()).await;
+        return result;
+    }
+}
+
+fn is_oauth_callback(callback: &HashMap<String, String>) -> bool {
+    callback.contains_key("code")
+        || callback.contains_key("error")
+        || callback.contains_key("state")
 }
 
 async fn read_callback(stream: &mut TcpStream) -> CommandResult<HashMap<String, String>> {
@@ -221,4 +245,35 @@ async fn write_browser_response(stream: &mut TcpStream, success: bool) -> std::i
         body
     );
     stream.write_all(response.as_bytes()).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_oauth_callback;
+    use std::collections::HashMap;
+
+    #[test]
+    fn ignores_stray_connections_without_oauth_params() {
+        assert!(!is_oauth_callback(&HashMap::new()));
+        assert!(!is_oauth_callback(&HashMap::from([(
+            "unrelated".into(),
+            "1".into()
+        )])));
+    }
+
+    #[test]
+    fn accepts_code_error_or_state() {
+        assert!(is_oauth_callback(&HashMap::from([(
+            "code".into(),
+            "abc".into()
+        )])));
+        assert!(is_oauth_callback(&HashMap::from([(
+            "error".into(),
+            "access_denied".into()
+        )])));
+        assert!(is_oauth_callback(&HashMap::from([(
+            "state".into(),
+            "nonce".into()
+        )])));
+    }
 }
