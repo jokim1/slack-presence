@@ -57,7 +57,7 @@ interface SchedulerOptions {
 }
 
 function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 export class PresenceScheduler {
@@ -78,6 +78,9 @@ export class PresenceScheduler {
     this.cursor = 0;
     this.cache.clear();
     this.paused = false;
+    this.blockedUntil = 0;
+    this.tokens = 8;
+    this.lastRefillAt = Date.now();
     const generation = this.generation;
     void this.run(generation);
   }

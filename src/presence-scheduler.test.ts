@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RateLimitError } from "./native-api";
-import { cadenceForMemberCount, PresenceStateCache } from "./presence-scheduler";
+import { cadenceForMemberCount, PresenceScheduler, PresenceStateCache } from "./presence-scheduler";
 
 describe("cadenceForMemberCount", () => {
   it("sweeps small channels once a minute", () => {
@@ -51,5 +51,43 @@ describe("RateLimitError", () => {
     expect(error).toBeInstanceOf(Error);
     expect(error.retryAfterSeconds).toBe(27);
     expect(error.message).toMatch(/27 seconds/);
+  });
+});
+
+describe("PresenceScheduler workspace switch", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it("does not carry Retry-After backoff into a new start()", async () => {
+    const calls: string[] = [];
+    let failFirst = true;
+    const scheduler = new PresenceScheduler({
+      request: async (userId) => {
+        calls.push(userId);
+        if (failFirst) {
+          failFirst = false;
+          throw new RateLimitError(60);
+        }
+        return { userId, presence: "active" };
+      },
+      onChange: () => undefined,
+      onRateLimit: () => undefined,
+      onError: () => undefined,
+    });
+
+    scheduler.start(["UAAAAAAA"]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toEqual(["UAAAAAAA"]);
+
+    scheduler.start(["UBBBBBBB"]);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(calls).toContain("UBBBBBBB");
+    scheduler.stop();
   });
 });

@@ -164,6 +164,7 @@ let members: Member[] = [];
 let selectedChannelId = "";
 let panelVisible = true;
 let toastTimer: number | undefined;
+let oauthInFlight = false;
 
 const scheduler = new PresenceScheduler({
   request: (userId) => getPresence(activeTeamId, userId),
@@ -607,14 +608,22 @@ document.querySelector<HTMLElement>(".titlebar")?.addEventListener("mousedown", 
   void startWindowDrag();
 });
 
-async function beginOAuth(): Promise<void> {
+async function beginOAuth(): Promise<boolean> {
+  if (oauthInFlight) {
+    showToast("Finish authorization in your browser");
+    return true;
+  }
   try {
+    oauthInFlight = true;
     await startOAuth();
     showToast("Finish authorization in your browser");
+    return true;
   } catch (error) {
+    oauthInFlight = false;
     showBanner(error instanceof Error ? error.message : "Could not start OAuth", "error");
     renderConnectionSettings();
     applyEmptyState();
+    return false;
   }
 }
 
@@ -623,9 +632,8 @@ async function handleConnectClick(): Promise<void> {
   ui.connect.textContent = "Opening browser…";
   ui.emptyConnect.disabled = true;
   ui.emptyConnect.textContent = "Opening browser…";
-  await beginOAuth();
-  renderConnectionSettings();
-  applyEmptyState();
+  const started = await beginOAuth();
+  if (!started) return;
 }
 
 ui.workspaceToggle.addEventListener("click", () => setPopover("workspaces"));
@@ -717,6 +725,7 @@ async function initialize(): Promise<void> {
   }
 
   await listenForOAuth(async (event) => {
+    oauthInFlight = false;
     if (!event.ok) {
       showBanner(event.message, "error");
       renderConnectionSettings();
