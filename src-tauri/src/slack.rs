@@ -365,17 +365,64 @@ async fn slack_get<T: DeserializeOwned>(
         .map_err(|_| CommandError::message("Slack returned incomplete data"))
 }
 
-fn slack_error(code: &str) -> CommandError {
+pub(crate) fn slack_error(code: &str) -> CommandError {
     match code {
-        "invalid_auth" | "token_revoked" | "account_inactive" => {
+        "invalid_auth" | "token_revoked" | "token_expired" | "account_inactive" | "not_authed" => {
             CommandError::reauth("Slack authorization expired. Reconnect the workspace.")
         }
         "missing_scope" => CommandError::message(
             "The Slack app is missing a required user scope. Update it and reconnect.",
         ),
+        "ratelimited" => CommandError::RateLimited {
+            retry_after_seconds: 60,
+        },
         "channel_not_found" | "not_in_channel" => CommandError::message(
             "This channel is unavailable or you are no longer a member. Choose another channel.",
         ),
         _ => CommandError::message(format!("Slack API error: {code}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::slack_error;
+    use crate::error::CommandError;
+
+    #[test]
+    fn revoked_and_expired_tokens_ask_to_reauth() {
+        for code in [
+            "invalid_auth",
+            "token_revoked",
+            "token_expired",
+            "account_inactive",
+            "not_authed",
+        ] {
+            match slack_error(code) {
+                CommandError::Reauth { message } => {
+                    assert!(message.contains("Reconnect"), "{code}: {message}");
+                }
+                other => panic!("{code} should be reauth, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn missing_scope_is_actionable() {
+        match slack_error("missing_scope") {
+            CommandError::Message { message } => {
+                assert!(message.contains("required user scope"));
+            }
+            other => panic!("expected a message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_ratelimit_becomes_rate_limited() {
+        match slack_error("ratelimited") {
+            CommandError::RateLimited {
+                retry_after_seconds,
+            } => assert_eq!(retry_after_seconds, 60),
+            other => panic!("expected rate limited, got {other:?}"),
+        }
     }
 }
