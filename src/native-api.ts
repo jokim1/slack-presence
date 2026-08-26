@@ -114,6 +114,11 @@ export async function hidePanel(): Promise<void> {
   if (isTauri) await native("hide_panel");
 }
 
+export async function startWindowDrag(): Promise<void> {
+  if (!isTauri) return;
+  await invoke("plugin:window|start_dragging", { label: "main" });
+}
+
 export async function listenForOAuth(
   handler: (event: OAuthComplete) => void,
 ): Promise<() => void> {

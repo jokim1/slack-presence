@@ -3,5 +3,9 @@
   "identifier": "default",
   "description": "Frontend access to core Tauri events and app metadata",
   "windows": ["main"],
-  "permissions": ["core:default", "core:event:default"]
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-start-dragging"
+  ]
 }

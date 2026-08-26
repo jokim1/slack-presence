@@ -3,7 +3,7 @@
 - Stack: Tauri 2 Rust shell with a framework-free TypeScript/Vite frontend.
 - Slack OAuth, Web API calls, Keychain storage, tray behavior, and native deep links live in `src-tauri/src`.
 - The Tier-3-aware presence scheduler lives in `src/presence-scheduler.ts`; UI orchestration is in `src/main.ts`.
-- Run the mock-first UI with `npm install && npm run dev`. Run the desktop app with `npm run tauri dev` after installing Rust and the prerequisites in `SETUP.md`.
+- Run the mock-first UI with `npm install && npm run dev`. Run the desktop app with `npm run tauri dev` after installing Rust and the prerequisites in `SETUP.md`. Local unsigned `.app`/`.dmg`: `npm run tauri build` (Rust stable on PATH; output in `src-tauri/target/release/bundle/`).
 - Validate changes with `npm test`, `npm run typecheck`, `npm run build`, and `cargo check --manifest-path src-tauri/Cargo.toml`.
 - Never log or move Slack OAuth tokens into frontend storage. The `xoxp` token belongs only in macOS Keychain.
 
