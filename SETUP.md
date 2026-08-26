@@ -1,6 +1,6 @@
 # Connect Presence for Slack to a workspace
 
-The Phase 1 app is intended for a local, single-workspace installation. Each user supplies their own Slack app credentials. Do not commit `.env` or share its client secret.
+The app is intended for a local installation where each user supplies their own Slack app credentials. Do not commit `.env` or share its client secret.
 
 ## 1. Create the Slack app
 
@@ -57,3 +57,11 @@ npm run tauri dev
 Open settings in the panel, choose **Connect Slack**, and approve the user scopes. The browser returns to the local callback, after which the panel loads the channels you belong to through `users.conversations`.
 
 If your workspace requires admin approval, Slack will keep the install pending until an administrator approves it. If you change scopes later, reconnect the app so Slack grants the updated set.
+
+## 6. Connect more workspaces (optional)
+
+Click the workspace name under the panel title and choose **Add a workspace**. On Slack's authorization page, use the workspace picker in the top-right corner to select the other workspace before approving.
+
+A Slack app can only be installed to workspaces beyond the one it was created in after distribution is enabled: in the app settings, open **Manage Distribution**, complete the checklist, and choose **Activate Public Distribution**. The `.env` credentials stay the same.
+
+The app stores one `xoxp` token per workspace in macOS Keychain and remembers each workspace's selected channel. Switch between workspaces from the same menu; **Disconnect** in settings removes only the active workspace.

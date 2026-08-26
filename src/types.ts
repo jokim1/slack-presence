@@ -1,11 +1,16 @@
 export type Presence = "active" | "away";
 
+export interface WorkspaceStatus {
+  teamId: string;
+  teamName: string;
+  connected: boolean;
+  selectedChannelId: string | null;
+}
+
 export interface AppStatus {
   credentialsConfigured: boolean;
-  authenticated: boolean;
-  teamId: string | null;
-  teamName: string | null;
-  selectedChannelId: string | null;
+  workspaces: WorkspaceStatus[];
+  activeTeamId: string | null;
   alwaysOnTop: boolean;
   redirectUri: string;
 }

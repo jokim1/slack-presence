@@ -3,12 +3,12 @@ mod oauth;
 mod settings;
 mod slack;
 
-use std::{path::PathBuf, process::Command};
+use std::{collections::HashMap, path::PathBuf, process::Command, sync::Arc};
 
 use error::{CommandError, CommandResult};
 use keyring::Entry;
 use serde::Serialize;
-use settings::SettingsStore;
+use settings::{SettingsStore, WorkspaceSettings};
 use slack::ProfileCache;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -18,23 +18,43 @@ use tauri::{
 use tokio::sync::RwLock;
 
 const KEYCHAIN_SERVICE: &str = "com.josephkim.presence-for-slack";
-const KEYCHAIN_ACCOUNT: &str = "slack-user-token";
+const LEGACY_KEYCHAIN_ACCOUNT: &str = "slack-user-token";
+
+pub(crate) struct WorkspaceSession {
+    pub token: String,
+    pub profiles: RwLock<ProfileCache>,
+}
+
+impl WorkspaceSession {
+    pub fn new(token: String) -> Arc<Self> {
+        Arc::new(Self {
+            token,
+            profiles: RwLock::new(ProfileCache::default()),
+        })
+    }
+}
 
 pub(crate) struct AppState {
     pub client: reqwest::Client,
-    pub token: RwLock<Option<String>>,
-    pub profiles: RwLock<ProfileCache>,
+    pub sessions: RwLock<HashMap<String, Arc<WorkspaceSession>>>,
     pub settings: SettingsStore,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceStatus {
+    team_id: String,
+    team_name: String,
+    connected: bool,
+    selected_channel_id: Option<String>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AppStatus {
     credentials_configured: bool,
-    authenticated: bool,
-    team_id: Option<String>,
-    team_name: Option<String>,
-    selected_channel_id: Option<String>,
+    workspaces: Vec<WorkspaceStatus>,
+    active_team_id: Option<String>,
     always_on_top: bool,
     redirect_uri: String,
 }
@@ -47,13 +67,21 @@ struct PanelVisibility {
 #[tauri::command]
 async fn get_app_status(state: State<'_, AppState>) -> CommandResult<AppStatus> {
     let settings = state.settings.read()?;
+    let sessions = state.sessions.read().await;
     let oauth_config = oauth::OAuthConfig::from_env();
     Ok(AppStatus {
         credentials_configured: oauth_config.is_some(),
-        authenticated: state.token.read().await.is_some(),
-        team_id: settings.team_id,
-        team_name: settings.team_name,
-        selected_channel_id: settings.selected_channel_id,
+        workspaces: settings
+            .workspaces
+            .iter()
+            .map(|workspace| WorkspaceStatus {
+                team_id: workspace.team_id.clone(),
+                team_name: workspace.team_name.clone(),
+                connected: sessions.contains_key(&workspace.team_id),
+                selected_channel_id: workspace.selected_channel_id.clone(),
+            })
+            .collect(),
+        active_team_id: settings.active_team_id,
         always_on_top: settings.always_on_top,
         redirect_uri: oauth_config
             .map(|config| config.redirect_uri)
@@ -62,29 +90,34 @@ async fn get_app_status(state: State<'_, AppState>) -> CommandResult<AppStatus> 
 }
 
 #[tauri::command]
-async fn list_channels(state: State<'_, AppState>) -> CommandResult<Vec<slack::Channel>> {
-    let token = require_token(&state).await?;
-    slack::list_channels(&state.client, &token).await
+async fn list_channels(
+    team_id: String,
+    state: State<'_, AppState>,
+) -> CommandResult<Vec<slack::Channel>> {
+    let session = session_for(&state, &team_id).await?;
+    slack::list_channels(&state.client, &session.token).await
 }
 
 #[tauri::command]
 async fn get_channel_members(
+    team_id: String,
     channel_id: String,
     state: State<'_, AppState>,
 ) -> CommandResult<Vec<slack::Member>> {
     validate_slack_id(&channel_id, &['C', 'G'])?;
-    let token = require_token(&state).await?;
-    slack::channel_members(&state.client, &token, &channel_id, &state.profiles).await
+    let session = session_for(&state, &team_id).await?;
+    slack::channel_members(&state.client, &session.token, &channel_id, &session.profiles).await
 }
 
 #[tauri::command]
 async fn get_presence(
+    team_id: String,
     user_id: String,
     state: State<'_, AppState>,
 ) -> CommandResult<slack::PresenceReply> {
     validate_slack_id(&user_id, &['U', 'W'])?;
-    let token = require_token(&state).await?;
-    slack::get_presence(&state.client, &token, user_id).await
+    let session = session_for(&state, &team_id).await?;
+    slack::get_presence(&state.client, &session.token, user_id).await
 }
 
 #[tauri::command]
@@ -93,14 +126,38 @@ async fn start_oauth(app: AppHandle) -> CommandResult<()> {
 }
 
 #[tauri::command]
+async fn set_active_workspace(team_id: String, state: State<'_, AppState>) -> CommandResult<()> {
+    validate_slack_id(&team_id, &['T', 'E'])?;
+    let known = state
+        .settings
+        .read()?
+        .workspaces
+        .iter()
+        .any(|workspace| workspace.team_id == team_id);
+    if !known {
+        return Err(CommandError::message("That workspace is not connected"));
+    }
+    state
+        .settings
+        .update(|settings| settings.active_team_id = Some(team_id))
+}
+
+#[tauri::command]
 async fn save_selected_channel(
+    team_id: String,
     channel_id: String,
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
     validate_slack_id(&channel_id, &['C', 'G'])?;
-    state
-        .settings
-        .update(|settings| settings.selected_channel_id = Some(channel_id))
+    state.settings.update(|settings| {
+        if let Some(workspace) = settings
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.team_id == team_id)
+        {
+            workspace.selected_channel_id = Some(channel_id);
+        }
+    })
 }
 
 #[tauri::command]
@@ -122,7 +179,7 @@ fn set_always_on_top(
 
 #[tauri::command]
 fn open_dm(team_id: String, user_id: String) -> CommandResult<()> {
-    validate_slack_id(&team_id, &['T'])?;
+    validate_slack_id(&team_id, &['T', 'E'])?;
     validate_slack_id(&user_id, &['U', 'W'])?;
     Command::new("open")
         .arg(format!("slack://user?team={team_id}&id={user_id}"))
@@ -137,24 +194,65 @@ fn hide_panel(app: AppHandle) -> CommandResult<()> {
 }
 
 #[tauri::command]
-async fn logout(state: State<'_, AppState>) -> CommandResult<()> {
-    delete_token_from_keychain()?;
-    *state.token.write().await = None;
-    *state.profiles.write().await = ProfileCache::default();
+async fn disconnect_workspace(team_id: String, state: State<'_, AppState>) -> CommandResult<()> {
+    validate_slack_id(&team_id, &['T', 'E'])?;
+    delete_token_from_keychain(&team_id)?;
+    state.sessions.write().await.remove(&team_id);
     state.settings.update(|settings| {
-        settings.team_id = None;
-        settings.team_name = None;
-        settings.selected_channel_id = None;
+        settings
+            .workspaces
+            .retain(|workspace| workspace.team_id != team_id);
+        if settings.active_team_id.as_deref() == Some(team_id.as_str()) {
+            settings.active_team_id = settings
+                .workspaces
+                .first()
+                .map(|workspace| workspace.team_id.clone());
+        }
     })
 }
 
-async fn require_token(state: &State<'_, AppState>) -> CommandResult<String> {
+pub(crate) async fn adopt_workspace(
+    state: &AppState,
+    team_id: &str,
+    team_name: &str,
+    token: String,
+) -> CommandResult<()> {
+    save_token_to_keychain(team_id, &token)?;
     state
-        .token
+        .sessions
+        .write()
+        .await
+        .insert(team_id.to_owned(), WorkspaceSession::new(token));
+    state.settings.update(|settings| {
+        if let Some(workspace) = settings
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.team_id == team_id)
+        {
+            workspace.team_name = team_name.to_owned();
+        } else {
+            settings.workspaces.push(WorkspaceSettings {
+                team_id: team_id.to_owned(),
+                team_name: team_name.to_owned(),
+                selected_channel_id: None,
+            });
+        }
+        settings.active_team_id = Some(team_id.to_owned());
+    })
+}
+
+async fn session_for(
+    state: &State<'_, AppState>,
+    team_id: &str,
+) -> CommandResult<Arc<WorkspaceSession>> {
+    validate_slack_id(team_id, &['T', 'E'])?;
+    state
+        .sessions
         .read()
         .await
-        .clone()
-        .ok_or_else(|| CommandError::reauth("Connect Slack to use the live workspace"))
+        .get(team_id)
+        .cloned()
+        .ok_or_else(|| CommandError::reauth("Reconnect this Slack workspace to load live data"))
 }
 
 fn validate_slack_id(value: &str, expected_prefixes: &[char]) -> CommandResult<()> {
@@ -170,13 +268,17 @@ fn validate_slack_id(value: &str, expected_prefixes: &[char]) -> CommandResult<(
     Ok(())
 }
 
-fn keychain_entry() -> CommandResult<Entry> {
-    Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+fn keychain_entry(account: &str) -> CommandResult<Entry> {
+    Entry::new(KEYCHAIN_SERVICE, account)
         .map_err(|_| CommandError::message("macOS Keychain is unavailable"))
 }
 
-fn load_token_from_keychain() -> CommandResult<Option<String>> {
-    match keychain_entry()?.get_password() {
+fn workspace_keychain_account(team_id: &str) -> String {
+    format!("{LEGACY_KEYCHAIN_ACCOUNT}-{team_id}")
+}
+
+fn load_token_from_keychain(account: &str) -> CommandResult<Option<String>> {
+    match keychain_entry(account)?.get_password() {
         Ok(token) => Ok(Some(token)),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(_) => Err(CommandError::message(
@@ -185,19 +287,47 @@ fn load_token_from_keychain() -> CommandResult<Option<String>> {
     }
 }
 
-pub(crate) fn save_token_to_keychain(token: &str) -> CommandResult<()> {
-    keychain_entry()?
+pub(crate) fn save_token_to_keychain(team_id: &str, token: &str) -> CommandResult<()> {
+    keychain_entry(&workspace_keychain_account(team_id))?
         .set_password(token)
         .map_err(|_| CommandError::message("Could not save the Slack token to Keychain"))
 }
 
-fn delete_token_from_keychain() -> CommandResult<()> {
-    match keychain_entry()?.delete_credential() {
+fn delete_token_from_keychain(team_id: &str) -> CommandResult<()> {
+    match keychain_entry(&workspace_keychain_account(team_id))?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(_) => Err(CommandError::message(
             "Could not remove the Slack token from Keychain",
         )),
     }
+}
+
+/// Load a token for every workspace in settings. The MVP stored a single token
+/// under a fixed account name; when a workspace has no per-team entry yet, move
+/// that legacy token into one.
+fn load_sessions(
+    workspaces: &[WorkspaceSettings],
+) -> CommandResult<HashMap<String, Arc<WorkspaceSession>>> {
+    let mut sessions = HashMap::new();
+    let mut legacy_token = load_token_from_keychain(LEGACY_KEYCHAIN_ACCOUNT)?;
+    for workspace in workspaces {
+        let token = match load_token_from_keychain(&workspace_keychain_account(&workspace.team_id))?
+        {
+            Some(token) => Some(token),
+            None => match legacy_token.take() {
+                Some(token) => {
+                    save_token_to_keychain(&workspace.team_id, &token)?;
+                    let _ = keychain_entry(LEGACY_KEYCHAIN_ACCOUNT)?.delete_credential();
+                    Some(token)
+                }
+                None => None,
+            },
+        };
+        if let Some(token) = token {
+            sessions.insert(workspace.team_id.clone(), WorkspaceSession::new(token));
+        }
+    }
+    Ok(sessions)
 }
 
 fn set_panel_visibility(app: &AppHandle, visible: bool) -> CommandResult<()> {
@@ -240,15 +370,14 @@ pub fn run() {
 
             let settings = SettingsStore::load(settings_path(app.handle())?);
             let saved = settings.read()?;
-            let token = load_token_from_keychain()?;
+            let sessions = load_sessions(&saved.workspaces)?;
             let client = reqwest::Client::builder()
                 .user_agent("Presence-for-Slack/0.1.0")
                 .https_only(true)
                 .build()?;
             app.manage(AppState {
                 client,
-                token: RwLock::new(token),
-                profiles: RwLock::new(ProfileCache::default()),
+                sessions: RwLock::new(sessions),
                 settings,
             });
 
@@ -309,11 +438,12 @@ pub fn run() {
             get_channel_members,
             get_presence,
             start_oauth,
+            set_active_workspace,
             save_selected_channel,
             set_always_on_top,
             open_dm,
             hide_panel,
-            logout,
+            disconnect_workspace,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Presence for Slack");

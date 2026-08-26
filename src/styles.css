@@ -150,6 +150,37 @@ input:focus-visible {
   white-space: nowrap;
 }
 
+.workspace-switcher {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 7px;
+  border: 0;
+  border-radius: 9px;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.workspace-switcher:hover {
+  background: var(--surface-hover);
+}
+
+.workspace-switcher > svg {
+  flex: 0 0 auto;
+  width: 14px;
+  fill: none;
+  stroke: var(--muted);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
 .window-actions {
   display: flex;
   gap: 2px;
@@ -294,6 +325,102 @@ input:focus-visible {
   left: auto;
   width: min(280px, calc(100% - 20px));
   padding: 14px;
+}
+
+.workspace-popover {
+  top: 54px;
+  right: auto;
+  left: 10px;
+  width: min(250px, calc(100% - 20px));
+}
+
+.workspace-option {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  border: 0;
+  border-radius: 8px;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.workspace-option:hover,
+.workspace-option[data-selected="true"] {
+  background: var(--surface-hover);
+}
+
+.workspace-avatar {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  color: white;
+  background: linear-gradient(145deg, #7767ed, #4e44b7);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.workspace-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.workspace-copy strong {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-copy small {
+  color: #9a6512;
+  font-size: 10px;
+  line-height: 13px;
+}
+
+.workspace-option i {
+  color: var(--accent);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.workspace-add {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 580;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-add:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.workspace-add span {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  font-size: 14px;
 }
 
 .search-field {

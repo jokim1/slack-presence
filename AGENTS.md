@@ -5,7 +5,7 @@
 - The Tier-3-aware presence scheduler lives in `src/presence-scheduler.ts`; UI orchestration is in `src/main.ts`.
 - Run the mock-first UI with `npm install && npm run dev`. Run the desktop app with `npm run tauri dev` after installing Rust and the prerequisites in `SETUP.md`. Local unsigned `.app`/`.dmg`: `npm run tauri build` (Rust stable on PATH; output in `src-tauri/target/release/bundle/`).
 - Validate changes with `npm test`, `npm run typecheck`, `npm run build`, and `cargo check --manifest-path src-tauri/Cargo.toml`.
-- Never log or move Slack OAuth tokens into frontend storage. The `xoxp` token belongs only in macOS Keychain.
+- Never log or move Slack OAuth tokens into frontend storage. `xoxp` tokens belong only in macOS Keychain, one entry per connected workspace (see `src-tauri/src/lib.rs`).
 
 ## Maintaining this file
 

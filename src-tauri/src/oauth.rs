@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     error::{CommandError, CommandResult},
-    save_token_to_keychain, slack, AppState,
+    slack, AppState,
 };
 
 const USER_SCOPES: &str = "users:read,channels:read,groups:read,im:read,mpim:read";
@@ -185,14 +185,7 @@ async fn handle_callback(
         .ok_or_else(|| CommandError::message("Slack did not return a user token"))?;
 
     let auth = slack::auth_test(&state.client, &token).await?;
-    save_token_to_keychain(&token)?;
-    *state.token.write().await = Some(token);
-    state.settings.update(|settings| {
-        settings.team_id = Some(auth.team_id.clone());
-        settings.team_name = Some(auth.team.clone());
-        settings.selected_channel_id = None;
-    })?;
-    *state.profiles.write().await = slack::ProfileCache::default();
+    crate::adopt_workspace(&state, &auth.team_id, &auth.team, token).await?;
     Ok(auth.team)
 }
 
