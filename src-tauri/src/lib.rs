@@ -11,6 +11,7 @@ use serde::Serialize;
 use settings::{SettingsStore, WorkspaceSettings};
 use slack::ProfileCache;
 use tauri::{
+    image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, PhysicalPosition, Position, State, WindowEvent,
@@ -395,11 +396,8 @@ pub fn run() {
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_hide, &quit])?;
             TrayIconBuilder::new()
-                .icon(
-                    app.default_window_icon()
-                        .ok_or("The app icon is unavailable")?
-                        .clone(),
-                )
+                .icon(Image::from_bytes(include_bytes!("../icons/32x32.png"))?)
+                .icon_as_template(false)
                 .tooltip("Presence for Slack")
                 .menu(&menu)
                 .show_menu_on_left_click(false)

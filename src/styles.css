@@ -101,36 +101,19 @@ input:focus-visible {
 }
 
 .brand-mark {
-  position: relative;
   flex: 0 0 32px;
   width: 32px;
   height: 32px;
+  overflow: hidden;
   border-radius: 10px;
-  background: linear-gradient(145deg, #7767ed, #4e44b7);
   box-shadow: 0 5px 14px rgba(91, 75, 203, 0.27);
+  line-height: 0;
 }
 
-.brand-mark span {
-  position: absolute;
-  width: 7px;
-  height: 7px;
-  border: 2px solid white;
-  border-radius: 50%;
-}
-
-.brand-mark span:nth-child(1) {
-  top: 7px;
-  left: 7px;
-}
-
-.brand-mark span:nth-child(2) {
-  top: 7px;
-  right: 7px;
-}
-
-.brand-mark span:nth-child(3) {
-  bottom: 7px;
-  left: 12px;
+.brand-mark svg {
+  display: block;
+  width: 32px;
+  height: 32px;
 }
 
 .brand-copy {
