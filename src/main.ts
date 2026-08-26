@@ -28,7 +28,26 @@ app.innerHTML = `
   <div class="app-shell">
     <header class="titlebar" data-tauri-drag-region>
       <div class="brand-mark" aria-hidden="true">
-        <span></span><span></span><span></span>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+          <defs>
+            <linearGradient id="brand-bg" x1="96" y1="36" x2="430" y2="490" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#6D65F2"/>
+              <stop offset="1" stop-color="#3A3394"/>
+            </linearGradient>
+            <linearGradient id="brand-sheen" x1="256" y1="28" x2="256" y2="250" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#fff" stop-opacity=".22"/>
+              <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          <rect x="28" y="28" width="456" height="456" rx="128" fill="url(#brand-bg)"/>
+          <rect x="28" y="28" width="456" height="456" rx="128" fill="url(#brand-sheen)"/>
+          <rect x="30.5" y="30.5" width="451" height="451" rx="126" stroke="#fff" stroke-opacity=".16" stroke-width="3"/>
+          <circle cx="206" cy="168" r="72" fill="#F5F4FF"/>
+          <path d="M112 332c0-50 42-88 94-88s94 38 94 88v44c0 36-42 62-94 62s-94-26-94-62z" fill="#F5F4FF"/>
+          <circle cx="354" cy="352" r="94" fill="#4B44C4"/>
+          <circle cx="354" cy="352" r="84" fill="#30D158"/>
+          <path d="M322 354l24 26 46-48" stroke="#fff" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
       </div>
       <button class="workspace-switcher" id="workspace-toggle" aria-haspopup="listbox" aria-expanded="false">
         <span class="brand-copy">
