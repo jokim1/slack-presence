@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "typecheck": "tsc --noEmit && npm --prefix oauth-worker run typecheck",
+    "test": "vitest run && npm --prefix oauth-worker test",
     "tauri": "tauri"
   },
   "dependencies": {

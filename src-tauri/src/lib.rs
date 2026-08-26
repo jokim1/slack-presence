@@ -3,7 +3,12 @@ mod oauth;
 mod settings;
 mod slack;
 
-use std::{collections::HashMap, path::PathBuf, process::Command, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    process::Command,
+    sync::{Arc, Mutex},
+};
 
 use error::{CommandError, CommandResult};
 use keyring::Entry;
@@ -16,7 +21,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, PhysicalPosition, Position, State, WindowEvent,
 };
-use tokio::sync::RwLock;
+use tokio::sync::{oneshot, RwLock};
 
 const KEYCHAIN_SERVICE: &str = "com.josephkim.presence-for-slack";
 const LEGACY_KEYCHAIN_ACCOUNT: &str = "slack-user-token";
@@ -37,8 +42,10 @@ impl WorkspaceSession {
 
 pub(crate) struct AppState {
     pub client: reqwest::Client,
+    pub exchange_client: reqwest::Client,
     pub sessions: RwLock<HashMap<String, Arc<WorkspaceSession>>>,
     pub settings: SettingsStore,
+    pub oauth_abort: Mutex<Option<oneshot::Sender<()>>>,
 }
 
 #[derive(Serialize)]
@@ -54,6 +61,11 @@ struct WorkspaceStatus {
 #[serde(rename_all = "camelCase")]
 struct AppStatus {
     credentials_configured: bool,
+    hosted_oauth_ready: bool,
+    client_id: String,
+    has_client_secret: bool,
+    exchange_url: String,
+    oauth_in_progress: bool,
     workspaces: Vec<WorkspaceStatus>,
     active_team_id: Option<String>,
     always_on_top: bool,
@@ -69,9 +81,27 @@ struct PanelVisibility {
 async fn get_app_status(state: State<'_, AppState>) -> CommandResult<AppStatus> {
     let settings = state.settings.read()?;
     let sessions = state.sessions.read().await;
-    let oauth_config = oauth::OAuthConfig::from_env();
+    let oauth_config = oauth::OAuthConfig::from_settings(&settings);
+    let hosted_oauth_ready = oauth_config
+        .as_ref()
+        .is_some_and(oauth::OAuthConfig::uses_hosted_exchange);
     Ok(AppStatus {
         credentials_configured: oauth_config.is_some(),
+        hosted_oauth_ready,
+        client_id: oauth_config
+            .as_ref()
+            .map(oauth::OAuthConfig::public_client_id)
+            .unwrap_or_default()
+            .to_owned(),
+        has_client_secret: oauth_config
+            .as_ref()
+            .is_some_and(oauth::OAuthConfig::has_client_secret),
+        exchange_url: oauth_config
+            .as_ref()
+            .and_then(oauth::OAuthConfig::exchange_url)
+            .unwrap_or(oauth::DEFAULT_OAUTH_EXCHANGE_URL)
+            .to_owned(),
+        oauth_in_progress: oauth::in_progress(&state),
         workspaces: settings
             .workspaces
             .iter()
@@ -86,7 +116,7 @@ async fn get_app_status(state: State<'_, AppState>) -> CommandResult<AppStatus> 
         always_on_top: settings.always_on_top,
         redirect_uri: oauth_config
             .map(|config| config.redirect_uri)
-            .unwrap_or_else(|| "http://127.0.0.1:53641/oauth/callback".to_owned()),
+            .unwrap_or_else(|| oauth::DEFAULT_REDIRECT_URI.to_owned()),
     })
 }
 
@@ -124,6 +154,50 @@ async fn get_presence(
 #[tauri::command]
 async fn start_oauth(app: AppHandle) -> CommandResult<()> {
     oauth::start(app).await
+}
+
+#[tauri::command]
+fn cancel_oauth(app: AppHandle) -> CommandResult<()> {
+    oauth::cancel(&app)
+}
+
+#[tauri::command]
+fn save_slack_credentials(
+    client_id: String,
+    client_secret: Option<String>,
+    exchange_url: Option<String>,
+    clear_secret: Option<bool>,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    let client_id = client_id.trim().to_owned();
+    let exchange = exchange_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    if let Some(url) = exchange.as_deref() {
+        oauth::validate_exchange_url(url)?;
+    }
+    let secret = client_secret
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let clear_secret = clear_secret.unwrap_or(false);
+
+    state.settings.update(|settings| {
+        settings.slack_client_id = if client_id.is_empty() {
+            None
+        } else {
+            Some(client_id.clone())
+        };
+        if secret.is_some() {
+            settings.slack_client_secret = secret.clone();
+        } else if clear_secret {
+            settings.slack_client_secret = None;
+        }
+        settings.slack_oauth_exchange_url = exchange.clone();
+    })
 }
 
 #[tauri::command]
@@ -378,8 +452,10 @@ pub fn run() {
                 .build()?;
             app.manage(AppState {
                 client,
+                exchange_client: oauth::exchange_http_client(),
                 sessions: RwLock::new(sessions),
                 settings,
+                oauth_abort: Mutex::new(None),
             });
 
             if let Some(window) = app.get_webview_window("main") {
@@ -442,6 +518,8 @@ pub fn run() {
             get_channel_members,
             get_presence,
             start_oauth,
+            cancel_oauth,
+            save_slack_credentials,
             set_active_workspace,
             save_selected_channel,
             set_always_on_top,

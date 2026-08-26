@@ -9,6 +9,11 @@ export interface WorkspaceStatus {
 
 export interface AppStatus {
   credentialsConfigured: boolean;
+  hostedOAuthReady: boolean;
+  clientId: string;
+  hasClientSecret: boolean;
+  exchangeUrl: string;
+  oauthInProgress: boolean;
   workspaces: WorkspaceStatus[];
   activeTeamId: string | null;
   alwaysOnTop: boolean;

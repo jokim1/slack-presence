@@ -4,13 +4,31 @@ import type { AppStatus, WorkspaceStatus } from "./types";
 
 const unconfigured: AppStatus = {
   credentialsConfigured: false,
+  hostedOAuthReady: false,
+  clientId: "",
+  hasClientSecret: false,
+  exchangeUrl: "https://presence-for-slack-oauth.workers.dev/oauth/exchange",
+  oauthInProgress: false,
   workspaces: [],
   activeTeamId: null,
   alwaysOnTop: false,
   redirectUri: "http://127.0.0.1:53641/oauth/callback",
 };
 
-const ready: AppStatus = { ...unconfigured, credentialsConfigured: true };
+const hosted: AppStatus = {
+  ...unconfigured,
+  credentialsConfigured: true,
+  hostedOAuthReady: true,
+  clientId: "123.456",
+};
+
+const byo: AppStatus = {
+  ...unconfigured,
+  credentialsConfigured: true,
+  hostedOAuthReady: false,
+  clientId: "123.456",
+  hasClientSecret: true,
+};
 
 const liveWorkspace: WorkspaceStatus = {
   teamId: "T123ABCDE",
@@ -25,42 +43,62 @@ const staleWorkspace: WorkspaceStatus = {
 };
 
 describe("settingsCopy", () => {
-  it("tells the browser preview to use the macOS app", () => {
-    const copy = settingsCopy(ready, undefined, false);
-    expect(copy.connectDisabled).toBe(true);
+  it("hides connect in the browser preview instead of showing a dead button", () => {
+    const copy = settingsCopy(hosted, undefined, false);
+    expect(copy.connectHidden).toBe(true);
     expect(copy.logoutHidden).toBe(true);
-    expect(copy.modeLabel).toBe("Not connected");
     expect(copy.connectionNote).toMatch(/macOS desktop app/);
   });
 
-  it("blocks connect until .env credentials exist", () => {
+  it("opens the credentials form when the shared app is not configured", () => {
     const copy = settingsCopy(unconfigured, undefined, true);
-    expect(copy.connectDisabled).toBe(true);
-    expect(copy.connectionNote).toMatch(/SETUP\.md/);
-    expect(copy.logoutHidden).toBe(true);
+    expect(copy.connectHidden).toBe(false);
+    expect(copy.advancedOpen).toBe(true);
+    expect(copy.connectionNote).not.toMatch(/\.env/);
+    expect(copy.connectionNote).toMatch(/not set up/i);
+    expect(copy.connectionNote).toMatch(/boxes below/);
+    expect(copy.credentialsNote).toMatch(/api\.slack\.com\/apps/);
+    expect(copy.credentialsNote).toMatch(/SETUP\.md/);
   });
 
-  it("enables connect when credentials are ready and no workspace is linked", () => {
-    const copy = settingsCopy(ready, undefined, true);
+  it("enables one-click connect when hosted OAuth is ready", () => {
+    const copy = settingsCopy(hosted, undefined, true);
+    expect(copy.connectHidden).toBe(false);
     expect(copy.connectDisabled).toBe(false);
     expect(copy.connectLabel).toBe("Connect Slack");
-    expect(copy.connectionNote).toMatch(/Connect a Slack workspace/);
+    expect(copy.advancedOpen).toBe(false);
+    expect(copy.connectionNote).toMatch(/browser/);
     expect(copy.connectionNote).not.toMatch(/demo/i);
   });
 
-  it("offers reconnect and disconnect for a live workspace", () => {
-    const copy = settingsCopy(ready, liveWorkspace, true);
+  it("enables connect after BYO credentials are saved without a restart", () => {
+    const copy = settingsCopy(byo, undefined, true);
+    expect(copy.connectHidden).toBe(false);
+    expect(copy.connectDisabled).toBe(false);
+    expect(copy.advancedOpen).toBe(true);
+  });
+
+  it("reuses a live workspace instead of offering Connect again", () => {
+    const copy = settingsCopy(hosted, liveWorkspace, true);
     expect(copy.modeLabel).toBe("Acme Studio");
-    expect(copy.connectLabel).toBe("Reconnect Slack");
+    expect(copy.connectHidden).toBe(true);
     expect(copy.logoutHidden).toBe(false);
     expect(copy.logoutLabel).toBe("Disconnect Acme Studio");
     expect(copy.connectionNote).toMatch(/Keychain/);
   });
 
-  it("asks to reconnect a workspace whose token is gone", () => {
-    const copy = settingsCopy(ready, staleWorkspace, true);
+  it("offers reconnect for a workspace whose token is gone", () => {
+    const copy = settingsCopy(hosted, staleWorkspace, true);
     expect(copy.connectionNote).toMatch(/reconnected/);
-    expect(copy.connectDisabled).toBe(false);
+    expect(copy.connectHidden).toBe(false);
+    expect(copy.connectLabel).toBe("Reconnect Slack");
+  });
+
+  it("shows cancel and hides connect while OAuth is pending", () => {
+    const copy = settingsCopy({ ...hosted, oauthInProgress: true }, undefined, true);
+    expect(copy.connectHidden).toBe(true);
+    expect(copy.cancelHidden).toBe(false);
+    expect(copy.connectionNote).toMatch(/on its own/);
   });
 });
 
@@ -69,6 +107,8 @@ describe("emptyCopy", () => {
     const copy = emptyCopy({
       isTauri: false,
       credentialsConfigured: false,
+      hostedOAuthReady: false,
+      oauthInProgress: false,
       hasChannels: false,
     });
     expect(copy.kind).toBe("browser");
@@ -76,21 +116,29 @@ describe("emptyCopy", () => {
     expect(copy.title).not.toMatch(/demo/i);
   });
 
-  it("shows credential setup when the desktop app has no .env", () => {
+  it("does not show a dead Connect button when credentials are missing", () => {
     const copy = emptyCopy({
       isTauri: true,
       credentialsConfigured: false,
+      hostedOAuthReady: false,
+      oauthInProgress: false,
       hasChannels: false,
     });
     expect(copy.kind).toBe("missing-credentials");
-    expect(copy.copy).toMatch(/SETUP\.md/);
-    expect(copy.showConnect).toBe(false);
+    expect(copy.showConnect).toBe(true);
+    expect(copy.connectLabel).toBe("Open settings");
+    expect(copy.copy).not.toMatch(/\.env/);
+    expect(copy.copy).toMatch(/not set up/i);
+    expect(copy.copy).toMatch(/Open Settings/);
+    expect(copy.copy).not.toMatch(/Client ID/);
   });
 
   it("shows a connect CTA once credentials exist", () => {
     const copy = emptyCopy({
       isTauri: true,
       credentialsConfigured: true,
+      hostedOAuthReady: true,
+      oauthInProgress: false,
       hasChannels: false,
     });
     expect(copy.kind).toBe("ready-to-connect");
@@ -98,10 +146,26 @@ describe("emptyCopy", () => {
     expect(copy.connectLabel).toBe("Connect Slack");
   });
 
+  it("shows waiting copy and cancel while Slack OAuth is in the browser", () => {
+    const copy = emptyCopy({
+      isTauri: true,
+      credentialsConfigured: true,
+      hostedOAuthReady: true,
+      oauthInProgress: true,
+      hasChannels: false,
+    });
+    expect(copy.kind).toBe("oauth-pending");
+    expect(copy.showConnect).toBe(false);
+    expect(copy.showCancel).toBe(true);
+    expect(copy.copy).toMatch(/on its own/);
+  });
+
   it("shows reconnect copy after a token is revoked or missing", () => {
     const copy = emptyCopy({
       isTauri: true,
       credentialsConfigured: true,
+      hostedOAuthReady: true,
+      oauthInProgress: false,
       workspace: staleWorkspace,
       hasChannels: false,
     });
@@ -115,6 +179,8 @@ describe("emptyCopy", () => {
     const copy = emptyCopy({
       isTauri: true,
       credentialsConfigured: true,
+      hostedOAuthReady: true,
+      oauthInProgress: false,
       workspace: liveWorkspace,
       hasChannels: false,
     });
@@ -126,6 +192,8 @@ describe("emptyCopy", () => {
     const copy = emptyCopy({
       isTauri: true,
       credentialsConfigured: true,
+      hostedOAuthReady: true,
+      oauthInProgress: false,
       workspace: liveWorkspace,
       hasChannels: true,
     });

@@ -1,6 +1,7 @@
 import "./styles.css";
 import { emptyCopy, settingsCopy, workspaceLabel } from "./connection-state";
 import {
+  cancelOAuth,
   disconnectWorkspace,
   getAppStatus,
   getPresence,
@@ -13,6 +14,7 @@ import {
   openDm,
   ReauthError,
   saveSelectedChannel,
+  saveSlackCredentials,
   setActiveWorkspace,
   setAlwaysOnTop,
   startOAuth,
@@ -104,6 +106,24 @@ app.innerHTML = `
       <div class="settings-divider"></div>
       <p class="settings-note" id="connection-note"></p>
       <button class="primary-button" id="connect-button">Connect Slack</button>
+      <button class="text-button" id="cancel-oauth" hidden>Cancel</button>
+      <details class="advanced-credentials" id="advanced-credentials">
+        <summary id="advanced-summary">Use your own Slack app</summary>
+        <p class="settings-note" id="credentials-note"></p>
+        <label class="field">
+          <span>Client ID</span>
+          <input id="client-id" type="text" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="field">
+          <span>Client Secret</span>
+          <input id="client-secret" type="password" autocomplete="off" />
+        </label>
+        <label class="field">
+          <span>Exchange URL</span>
+          <input id="exchange-url" type="url" autocomplete="off" spellcheck="false" />
+        </label>
+        <button class="text-button" id="save-credentials" type="button">Save credentials</button>
+      </details>
       <button class="text-button danger" id="logout-button" hidden>Disconnect workspace</button>
     </section>
 
@@ -118,6 +138,7 @@ app.innerHTML = `
         <strong id="empty-title">Connect Slack</strong>
         <p id="empty-copy">Connect a workspace to see who's around in a channel you belong to.</p>
         <button class="primary-button" id="empty-connect" hidden>Connect Slack</button>
+        <button class="text-button" id="empty-cancel" hidden>Cancel</button>
       </div>
     </main>
 
@@ -152,6 +173,14 @@ const ui = {
   connectionNote: element<HTMLElement>("#connection-note"),
   alwaysOnTop: element<HTMLInputElement>("#always-on-top"),
   connect: element<HTMLButtonElement>("#connect-button"),
+  cancelOAuth: element<HTMLButtonElement>("#cancel-oauth"),
+  advanced: element<HTMLDetailsElement>("#advanced-credentials"),
+  advancedSummary: element<HTMLElement>("#advanced-summary"),
+  credentialsNote: element<HTMLElement>("#credentials-note"),
+  clientId: element<HTMLInputElement>("#client-id"),
+  clientSecret: element<HTMLInputElement>("#client-secret"),
+  exchangeUrl: element<HTMLInputElement>("#exchange-url"),
+  saveCredentials: element<HTMLButtonElement>("#save-credentials"),
   logout: element<HTMLButtonElement>("#logout-button"),
   refresh: element<HTMLButtonElement>("#refresh"),
   hidePanel: element<HTMLButtonElement>("#hide-panel"),
@@ -161,6 +190,7 @@ const ui = {
   emptyTitle: element<HTMLElement>("#empty-title"),
   emptyCopy: element<HTMLElement>("#empty-copy"),
   emptyConnect: element<HTMLButtonElement>("#empty-connect"),
+  emptyCancel: element<HTMLButtonElement>("#empty-cancel"),
   peopleCount: element<HTMLElement>("#people-count"),
   activeCount: element<HTMLElement>("#active-count"),
   freshness: element<HTMLElement>("#freshness"),
@@ -169,6 +199,11 @@ const ui = {
 
 const EMPTY_STATUS: AppStatus = {
   credentialsConfigured: false,
+  hostedOAuthReady: false,
+  clientId: "",
+  hasClientSecret: false,
+  exchangeUrl: "",
+  oauthInProgress: false,
   workspaces: [],
   activeTeamId: null,
   alwaysOnTop: false,
@@ -304,6 +339,8 @@ function applyEmptyState(): void {
   const copy = emptyCopy({
     isTauri,
     credentialsConfigured: status.credentialsConfigured,
+    hostedOAuthReady: status.hostedOAuthReady,
+    oauthInProgress: oauthInFlight || status.oauthInProgress,
     workspace: activeWorkspace(),
     hasChannels: channels.length > 0,
   });
@@ -311,7 +348,8 @@ function applyEmptyState(): void {
   ui.emptyCopy.textContent = copy.copy;
   ui.emptyConnect.hidden = !copy.showConnect;
   ui.emptyConnect.textContent = copy.connectLabel;
-  ui.emptyConnect.disabled = copy.showConnect && !status.credentialsConfigured;
+  ui.emptyConnect.disabled = false;
+  ui.emptyCancel.hidden = !copy.showCancel;
   ui.emptyState.hidden = members.length > 0;
 }
 
@@ -440,13 +478,36 @@ function renderChannelOptions(query = ""): void {
 
 function renderConnectionSettings(): void {
   ui.alwaysOnTop.checked = status.alwaysOnTop;
-  const copy = settingsCopy(status, activeWorkspace(), isTauri);
+  const copy = settingsCopy(
+    { ...status, oauthInProgress: oauthInFlight || status.oauthInProgress },
+    activeWorkspace(),
+    isTauri,
+  );
   ui.modeLabel.textContent = copy.modeLabel;
   ui.connectionNote.textContent = copy.connectionNote;
   ui.connect.textContent = copy.connectLabel;
+  ui.connect.hidden = copy.connectHidden;
   ui.connect.disabled = copy.connectDisabled;
+  ui.cancelOAuth.hidden = copy.cancelHidden;
   ui.logout.hidden = copy.logoutHidden;
   ui.logout.textContent = copy.logoutLabel;
+  ui.advancedSummary.textContent = copy.advancedSummary;
+  ui.credentialsNote.textContent = copy.credentialsNote;
+  ui.credentialsNote.hidden = !copy.credentialsNote;
+  if (!ui.advanced.matches(":focus-within")) {
+    ui.advanced.open = copy.advancedOpen;
+  }
+  if (document.activeElement !== ui.clientId) {
+    ui.clientId.value = status.clientId;
+  }
+  if (document.activeElement !== ui.exchangeUrl) {
+    ui.exchangeUrl.value = status.exchangeUrl;
+  }
+  ui.clientSecret.placeholder = status.hasClientSecret ? "Saved on this Mac" : "";
+  ui.clientId.disabled = !isTauri;
+  ui.clientSecret.disabled = !isTauri;
+  ui.exchangeUrl.disabled = !isTauri;
+  ui.saveCredentials.disabled = !isTauri;
 }
 
 function showDisconnectedPanel(message: string): void {
@@ -598,6 +659,18 @@ function setPopover(name: "workspaces" | "channels" | "settings"): void {
   }
 }
 
+function openSettingsPanel(): void {
+  ui.workspacePopover.hidden = true;
+  ui.channelPopover.hidden = true;
+  ui.settingsPopover.hidden = false;
+  ui.workspaceToggle.setAttribute("aria-expanded", "false");
+  ui.channelToggle.setAttribute("aria-expanded", "false");
+  ui.settingsToggle.setAttribute("aria-expanded", "true");
+  ui.advanced.open = true;
+  renderConnectionSettings();
+  window.setTimeout(() => ui.clientId.focus(), 0);
+}
+
 function closePopovers(): void {
   ui.workspacePopover.hidden = true;
   ui.channelPopover.hidden = true;
@@ -629,16 +702,20 @@ document.querySelector<HTMLElement>(".titlebar")?.addEventListener("mousedown", 
 
 async function beginOAuth(): Promise<boolean> {
   if (oauthInFlight) {
-    showToast("Finish authorization in your browser");
+    showToast("Finish signing in with Slack in your browser");
     return true;
   }
   try {
     oauthInFlight = true;
+    status.oauthInProgress = true;
+    renderConnectionSettings();
+    applyEmptyState();
     await startOAuth();
-    showToast("Finish authorization in your browser");
+    showBanner("Finish signing in with Slack in your browser. This window will connect on its own.", "info");
     return true;
   } catch (error) {
     oauthInFlight = false;
+    status.oauthInProgress = false;
     showBanner(error instanceof Error ? error.message : "Could not start OAuth", "error");
     renderConnectionSettings();
     applyEmptyState();
@@ -647,12 +724,61 @@ async function beginOAuth(): Promise<boolean> {
 }
 
 async function handleConnectClick(): Promise<void> {
+  const workspace = activeWorkspace();
+  if (workspace?.connected) {
+    showToast(`Already connected to ${workspace.teamName}`);
+    return;
+  }
+  if (!status.credentialsConfigured) {
+    const saved = await persistCredentialsFromForm();
+    if (!saved) {
+      openSettingsPanel();
+      return;
+    }
+  }
   ui.connect.disabled = true;
   ui.connect.textContent = "Opening browser…";
   ui.emptyConnect.disabled = true;
   ui.emptyConnect.textContent = "Opening browser…";
   const started = await beginOAuth();
   if (!started) return;
+}
+
+async function persistCredentialsFromForm(): Promise<boolean> {
+  if (!isTauri) return false;
+  const clientId = ui.clientId.value.trim();
+  const clientSecret = ui.clientSecret.value.trim();
+  const exchangeUrl = ui.exchangeUrl.value.trim();
+  if (!clientId) return false;
+  if (!clientSecret && !status.hasClientSecret && !exchangeUrl) return false;
+  try {
+    await saveSlackCredentials({
+      clientId,
+      clientSecret: clientSecret || undefined,
+      exchangeUrl: exchangeUrl || undefined,
+    });
+    ui.clientSecret.value = "";
+    status = await getAppStatus();
+    applyStatus();
+    renderConnectionSettings();
+    applyEmptyState();
+    return status.credentialsConfigured;
+  } catch (error) {
+    showBanner(error instanceof Error ? error.message : "Could not save credentials", "error");
+    return false;
+  }
+}
+
+async function handleCancelOAuth(): Promise<void> {
+  try {
+    await cancelOAuth();
+  } catch (error) {
+    oauthInFlight = false;
+    status.oauthInProgress = false;
+    showBanner(error instanceof Error ? error.message : "Could not cancel", "error");
+    renderConnectionSettings();
+    applyEmptyState();
+  }
 }
 
 ui.workspaceToggle.addEventListener("click", () => setPopover("workspaces"));
@@ -678,7 +804,7 @@ ui.addWorkspace.addEventListener("click", () => {
     return;
   }
   if (!status.credentialsConfigured) {
-    showBanner("Add your Client ID and Secret to .env, then restart the app. See SETUP.md.", "info");
+    openSettingsPanel();
     return;
   }
   void beginOAuth();
@@ -698,8 +824,24 @@ ui.alwaysOnTop.addEventListener("change", async () => {
   }
 });
 
-ui.connect.addEventListener("click", () => void handleConnectClick());
-ui.emptyConnect.addEventListener("click", () => void handleConnectClick());
+ui.connect.addEventListener("click", (event) => {
+  event.stopPropagation();
+  void handleConnectClick();
+});
+ui.emptyConnect.addEventListener("click", (event) => {
+  event.stopPropagation();
+  if (!status.credentialsConfigured) {
+    openSettingsPanel();
+    return;
+  }
+  void handleConnectClick();
+});
+ui.cancelOAuth.addEventListener("click", () => void handleCancelOAuth());
+ui.emptyCancel.addEventListener("click", () => void handleCancelOAuth());
+ui.saveCredentials.addEventListener("click", async () => {
+  const saved = await persistCredentialsFromForm();
+  if (saved) showToast("Credentials saved");
+});
 
 ui.logout.addEventListener("click", async () => {
   const workspaceName = activeWorkspace()?.teamName ?? "workspace";
@@ -724,7 +866,9 @@ document.addEventListener("click", (event) => {
     !ui.channelPopover.contains(target) &&
     !ui.channelToggle.contains(target) &&
     !ui.settingsPopover.contains(target) &&
-    !ui.settingsToggle.contains(target)
+    !ui.settingsToggle.contains(target) &&
+    !ui.emptyConnect.contains(target) &&
+    !ui.emptyCancel.contains(target)
   ) {
     closePopovers();
   }
@@ -745,8 +889,14 @@ async function initialize(): Promise<void> {
 
   await listenForOAuth(async (event) => {
     oauthInFlight = false;
+    status.oauthInProgress = false;
     if (!event.ok) {
-      showBanner(event.message, "error");
+      if (/cancell?ed/i.test(event.message)) {
+        hideBanner();
+        showToast("Slack authorization cancelled");
+      } else {
+        showBanner(event.message, "error");
+      }
       renderConnectionSettings();
       applyEmptyState();
       return;
@@ -755,6 +905,7 @@ async function initialize(): Promise<void> {
     applyStatus();
     closePopovers();
     await loadWorkspace();
+    hideBanner();
     showToast(`Connected to ${activeWorkspace()?.teamName ?? "Slack"}`);
   });
 

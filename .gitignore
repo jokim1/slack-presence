@@ -38,6 +38,8 @@ pnpm-debug.log*
 .env.*
 !.env.example
 *.pem
+oauth-worker/.wrangler/
+oauth-worker/.dev.vars
 
 # Optional repo-local Rust toolchain used by contributors without rustup
 .dev-tools/
