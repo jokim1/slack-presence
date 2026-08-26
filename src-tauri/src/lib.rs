@@ -388,8 +388,12 @@ pub fn run() {
                 }
             }
 
-            let quit = MenuItem::with_id(app, "quit", "Quit Presence", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&quit])?;
+            // Accessory apps have no Dock icon / app menu bar; the tray menu is
+            // the quit affordance. Left-click still toggles the panel.
+            let show_hide =
+                MenuItem::with_id(app, "show_hide", "Show / Hide", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show_hide, &quit])?;
             TrayIconBuilder::new()
                 .icon(
                     app.default_window_icon()
@@ -399,10 +403,12 @@ pub fn run() {
                 .tooltip("Presence for Slack")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| {
-                    if event.id.as_ref() == "quit" {
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show_hide" => toggle_panel(app),
+                    "quit" => {
                         app.exit(0);
                     }
+                    _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
                     if matches!(
