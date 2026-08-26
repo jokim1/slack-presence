@@ -91,6 +91,8 @@ input:focus-visible {
   min-height: 61px;
   padding: 12px 12px 10px 14px;
   user-select: none;
+  -webkit-app-region: drag;
+  app-region: drag;
 }
 
 .brand-mark {
@@ -151,6 +153,8 @@ input:focus-visible {
 .window-actions {
   display: flex;
   gap: 2px;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 
 .icon-button {

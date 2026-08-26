@@ -13,6 +13,7 @@ import {
   saveSelectedChannel,
   setAlwaysOnTop,
   startOAuth,
+  startWindowDrag,
 } from "./native-api";
 import { cadenceForMemberCount, PresenceScheduler } from "./presence-scheduler";
 import type { AppStatus, Channel, Member, PresenceReply } from "./types";
@@ -426,6 +427,13 @@ async function handleMemberClick(member: Member): Promise<void> {
     showBanner(error instanceof Error ? error.message : "Could not open Slack", "error");
   }
 }
+
+document.querySelector<HTMLElement>(".titlebar")?.addEventListener("mousedown", (event) => {
+  if (event.button !== 0) return;
+  const target = event.target;
+  if (target instanceof Element && target.closest("button, input, a")) return;
+  void startWindowDrag();
+});
 
 ui.channelToggle.addEventListener("click", () => setPopover("channels"));
 ui.settingsToggle.addEventListener("click", () => setPopover("settings"));
