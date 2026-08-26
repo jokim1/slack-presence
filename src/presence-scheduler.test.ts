@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { RateLimitError } from "./native-api";
 import { cadenceForMemberCount, PresenceStateCache } from "./presence-scheduler";
 
 describe("cadenceForMemberCount", () => {
@@ -41,5 +42,14 @@ describe("PresenceStateCache", () => {
     expect(cache.update("U1", "away")).toBe(true);
     expect(cache.update("U1", "away")).toBe(false);
     expect(cache.update("U1", "active")).toBe(true);
+  });
+});
+
+describe("RateLimitError", () => {
+  it("carries Slack Retry-After for the real presence path", () => {
+    const error = new RateLimitError(27);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.retryAfterSeconds).toBe(27);
+    expect(error.message).toMatch(/27 seconds/);
   });
 });

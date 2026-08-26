@@ -1,5 +1,5 @@
 import "./styles.css";
-import { mockWorkspaces } from "./mock-data";
+import { emptyCopy, settingsCopy, workspaceLabel } from "./connection-state";
 import {
   disconnectWorkspace,
   getAppStatus,
@@ -11,6 +11,7 @@ import {
   listenForPanelVisibility,
   loadMembers,
   openDm,
+  ReauthError,
   saveSelectedChannel,
   setActiveWorkspace,
   setAlwaysOnTop,
@@ -75,7 +76,7 @@ app.innerHTML = `
     <section class="popover settings-popover" id="settings-popover" hidden>
       <div class="settings-heading">
         <strong>Settings</strong>
-        <span id="mode-label">Demo workspace</span>
+        <span id="mode-label">Not connected</span>
       </div>
       <label class="toggle-row">
         <span><strong>Keep panel on top</strong><small>Stay visible above other windows</small></span>
@@ -95,14 +96,15 @@ app.innerHTML = `
       <div class="member-list" id="member-list"></div>
       <div class="empty-state" id="empty-state" hidden>
         <div class="empty-orbit" aria-hidden="true"><span></span></div>
-        <strong>No people to show</strong>
-        <p>This channel may be empty or its members are bots and deactivated accounts.</p>
+        <strong id="empty-title">Connect Slack</strong>
+        <p id="empty-copy">Connect a workspace to see who's around in a channel you belong to.</p>
+        <button class="primary-button" id="empty-connect" hidden>Connect Slack</button>
       </div>
     </main>
 
     <footer class="footer">
       <span class="active-summary"><i></i><span id="active-count">0 active</span></span>
-      <span id="freshness">Demo data</span>
+      <span id="freshness">Not connected</span>
     </footer>
     <div class="toast" id="toast" role="status" hidden></div>
   </div>
@@ -137,30 +139,44 @@ const ui = {
   banner: element<HTMLElement>("#status-banner"),
   memberList: element<HTMLElement>("#member-list"),
   emptyState: element<HTMLElement>("#empty-state"),
+  emptyTitle: element<HTMLElement>("#empty-title"),
+  emptyCopy: element<HTMLElement>("#empty-copy"),
+  emptyConnect: element<HTMLButtonElement>("#empty-connect"),
   peopleCount: element<HTMLElement>("#people-count"),
   activeCount: element<HTMLElement>("#active-count"),
   freshness: element<HTMLElement>("#freshness"),
   toast: element<HTMLElement>("#toast"),
 };
 
-let status: AppStatus;
+const EMPTY_STATUS: AppStatus = {
+  credentialsConfigured: false,
+  workspaces: [],
+  activeTeamId: null,
+  alwaysOnTop: false,
+  redirectUri: "http://127.0.0.1:53641/oauth/callback",
+};
+
+let status: AppStatus = { ...EMPTY_STATUS };
 let workspaces: WorkspaceStatus[] = [];
 let activeTeamId = "";
 let channels: Channel[] = [];
 let members: Member[] = [];
 let selectedChannelId = "";
-let useMock = true;
 let panelVisible = true;
 let toastTimer: number | undefined;
 
 const scheduler = new PresenceScheduler({
-  request: (userId) => getPresence(activeTeamId, userId, useMock),
+  request: (userId) => getPresence(activeTeamId, userId),
   onChange: patchPresence,
   onRateLimit: (seconds) => {
     showBanner(`Slack is rate limiting presence checks. Retrying in ${seconds}s.`, "warning");
     ui.freshness.textContent = "Presence paused";
   },
   onError: (error) => {
+    if (error instanceof ReauthError) {
+      markWorkspaceDisconnected(error.message);
+      return;
+    }
     showBanner(error.message, "error");
     ui.freshness.textContent = "Last-known presence";
   },
@@ -170,13 +186,14 @@ function activeWorkspace(): WorkspaceStatus | undefined {
   return workspaces.find(({ teamId }) => teamId === activeTeamId);
 }
 
+function workspaceIsLive(): boolean {
+  return Boolean(activeWorkspace()?.connected);
+}
+
 function applyStatus(): void {
-  useMock = !isTauri || status.workspaces.length === 0;
-  workspaces = useMock ? structuredClone(mockWorkspaces) : status.workspaces;
+  workspaces = status.workspaces;
   const stillListed = workspaces.some(({ teamId }) => teamId === activeTeamId);
-  activeTeamId = useMock
-    ? (stillListed ? activeTeamId : workspaces[0]?.teamId ?? "")
-    : status.activeTeamId ?? workspaces[0]?.teamId ?? "";
+  activeTeamId = status.activeTeamId ?? (stillListed ? activeTeamId : workspaces[0]?.teamId ?? "");
 }
 
 function showBanner(message: string, tone: "info" | "warning" | "error" = "info"): void {
@@ -263,9 +280,24 @@ function createMemberRow(member: Member): HTMLButtonElement {
   return row;
 }
 
+function applyEmptyState(): void {
+  const copy = emptyCopy({
+    isTauri,
+    credentialsConfigured: status.credentialsConfigured,
+    workspace: activeWorkspace(),
+    hasChannels: channels.length > 0,
+  });
+  ui.emptyTitle.textContent = copy.title;
+  ui.emptyCopy.textContent = copy.copy;
+  ui.emptyConnect.hidden = !copy.showConnect;
+  ui.emptyConnect.textContent = copy.connectLabel;
+  ui.emptyConnect.disabled = copy.showConnect && !status.credentialsConfigured;
+  ui.emptyState.hidden = members.length > 0;
+}
+
 function renderMembers(): void {
   ui.memberList.replaceChildren(...sortedMembers().map(createMemberRow));
-  ui.emptyState.hidden = members.length > 0;
+  applyEmptyState();
   ui.peopleCount.textContent = `${members.length} ${members.length === 1 ? "member" : "members"}`;
   updateActiveCount();
 }
@@ -273,6 +305,11 @@ function renderMembers(): void {
 function updateActiveCount(): void {
   const count = members.filter((member) => member.presence === "active").length;
   ui.activeCount.textContent = `${count} active`;
+}
+
+function setChannelControlsEnabled(enabled: boolean): void {
+  ui.channelToggle.disabled = !enabled;
+  ui.refresh.disabled = !enabled;
 }
 
 function patchPresence(reply: PresenceReply): void {
@@ -307,7 +344,7 @@ function renderSkeleton(): void {
   const rows = Array.from({ length: 6 }, () => {
     const row = document.createElement("div");
     row.className = "skeleton-row";
-    row.innerHTML = '<i></i><span><b></b><em></em></span>';
+    row.innerHTML = "<i></i><span><b></b><em></em></span>";
     return row;
   });
   ui.memberList.replaceChildren(...rows);
@@ -374,7 +411,7 @@ function renderChannelOptions(query = ""): void {
   if (nodes.length === 0) {
     const empty = document.createElement("p");
     empty.className = "channel-empty";
-    empty.textContent = "No matching channels";
+    empty.textContent = workspaceIsLive() ? "No matching channels" : "Connect Slack to load channels";
     ui.channelOptions.replaceChildren(empty);
   } else {
     ui.channelOptions.replaceChildren(...nodes);
@@ -383,59 +420,67 @@ function renderChannelOptions(query = ""): void {
 
 function renderConnectionSettings(): void {
   ui.alwaysOnTop.checked = status.alwaysOnTop;
-  const workspace = activeWorkspace();
+  const copy = settingsCopy(status, activeWorkspace(), isTauri);
+  ui.modeLabel.textContent = copy.modeLabel;
+  ui.connectionNote.textContent = copy.connectionNote;
+  ui.connect.textContent = copy.connectLabel;
+  ui.connect.disabled = copy.connectDisabled;
+  ui.logout.hidden = copy.logoutHidden;
+  ui.logout.textContent = copy.logoutLabel;
+}
 
-  if (!useMock && workspace) {
-    ui.modeLabel.textContent = workspace.teamName;
-    ui.logout.hidden = false;
-    ui.logout.textContent = `Disconnect ${workspace.teamName}`;
-    ui.connectionNote.textContent = workspace.connected
-      ? "Connected with a user token stored in macOS Keychain."
-      : "This workspace needs to be reconnected.";
-    ui.connect.textContent = "Reconnect Slack";
-    ui.connect.disabled = !status.credentialsConfigured;
+function showDisconnectedPanel(message: string): void {
+  scheduler.stop();
+  members = [];
+  channels = [];
+  selectedChannelId = "";
+  ui.channelName.textContent = "Choose a channel";
+  setChannelControlsEnabled(false);
+  renderChannelOptions();
+  renderMembers();
+  renderConnectionSettings();
+  renderWorkspaceOptions();
+  ui.freshness.textContent = "Reconnect required";
+  showBanner(message, "error");
+}
+
+function markWorkspaceDisconnected(message: string): void {
+  const workspace = activeWorkspace();
+  if (workspace) workspace.connected = false;
+  showDisconnectedPanel(message);
+}
+
+function handleDataError(error: unknown, fallback: string): void {
+  if (error instanceof ReauthError) {
+    markWorkspaceDisconnected(error.message);
     return;
   }
-
-  ui.logout.hidden = true;
-  ui.modeLabel.textContent = "Demo workspace";
-  ui.connect.textContent = "Connect Slack";
-  if (!isTauri) {
-    ui.connectionNote.textContent = "OAuth and Keychain access are available in the macOS desktop app.";
-    ui.connect.disabled = true;
-  } else if (!status.credentialsConfigured) {
-    ui.connectionNote.textContent = "Add your Client ID and Secret to .env, then restart the app. See SETUP.md.";
-    ui.connect.disabled = true;
-  } else {
-    ui.connectionNote.textContent = "Your local app credentials are ready. Connect to replace demo data.";
-    ui.connect.disabled = false;
-  }
+  members = [];
+  renderMembers();
+  showBanner(error instanceof Error ? error.message : fallback, "error");
 }
 
 async function loadChannelMembers(): Promise<void> {
-  if (!selectedChannelId) return;
+  if (!selectedChannelId || !workspaceIsLive()) return;
   renderSkeleton();
   ui.refresh.classList.add("spinning");
   ui.refresh.disabled = true;
   try {
-    members = await loadMembers(activeTeamId, selectedChannelId, useMock);
+    members = await loadMembers(activeTeamId, selectedChannelId);
     renderMembers();
     const cadence = cadenceForMemberCount(members.length);
     ui.freshness.textContent = cadence.staleNotice
       ? "Large channel · rolling updates"
-      : useMock
-        ? "Demo data"
-        : "Refreshing presence";
+      : "Refreshing presence";
     scheduler.start(members.map(({ id }) => id));
     if (!panelVisible && !status.alwaysOnTop) scheduler.pause();
     hideBanner();
   } catch (error) {
-    members = [];
-    renderMembers();
-    showBanner(error instanceof Error ? error.message : "Could not load channel members", "error");
+    handleDataError(error, "Could not load channel members");
+    if (!(error instanceof ReauthError)) ui.freshness.textContent = "Could not refresh";
   } finally {
     ui.refresh.classList.remove("spinning");
-    ui.refresh.disabled = false;
+    if (workspaceIsLive()) ui.refresh.disabled = false;
   }
 }
 
@@ -447,7 +492,7 @@ async function selectChannel(channelId: string): Promise<void> {
   ui.channelName.textContent = channel ? `# ${channel.name}` : "Choose a channel";
   closePopovers();
   renderChannelOptions();
-  if (!useMock) await saveSelectedChannel(activeTeamId, channelId);
+  if (workspaceIsLive()) await saveSelectedChannel(activeTeamId, channelId);
   await loadChannelMembers();
 }
 
@@ -456,42 +501,54 @@ async function selectWorkspace(teamId: string): Promise<void> {
   if (teamId === activeTeamId) return;
   scheduler.stop();
   activeTeamId = teamId;
-  if (!useMock) {
-    try {
-      await setActiveWorkspace(teamId);
-    } catch (error) {
-      showBanner(error instanceof Error ? error.message : "Could not switch workspaces", "error");
-    }
+  try {
+    await setActiveWorkspace(teamId);
+  } catch (error) {
+    showBanner(error instanceof Error ? error.message : "Could not switch workspaces", "error");
   }
   await loadWorkspace();
 }
 
 async function loadWorkspace(): Promise<void> {
   scheduler.stop();
+  members = [];
+  channels = [];
+  selectedChannelId = "";
   const workspace = activeWorkspace();
-  ui.workspace.textContent = workspace
-    ? useMock
-      ? `Demo · ${workspace.teamName}`
-      : workspace.teamName
-    : "Slack workspace";
+  ui.workspace.textContent = workspaceLabel(workspace);
   renderWorkspaceOptions();
   renderConnectionSettings();
 
-  channels = [];
-  selectedChannelId = "";
-  try {
-    channels = await listChannels(activeTeamId, useMock);
-  } catch (error) {
-    members = [];
-    renderMembers();
+  if (!workspace) {
+    setChannelControlsEnabled(false);
     ui.channelName.textContent = "Choose a channel";
     renderChannelOptions();
+    renderMembers();
     ui.freshness.textContent = "Not connected";
-    showBanner(error instanceof Error ? error.message : "Could not load channels", "error");
+    hideBanner();
     return;
   }
 
-  const preferred = workspace?.selectedChannelId;
+  if (!workspace.connected) {
+    showDisconnectedPanel("Reconnect this Slack workspace to load live data.");
+    return;
+  }
+
+  setChannelControlsEnabled(true);
+  try {
+    channels = await listChannels(activeTeamId);
+  } catch (error) {
+    ui.channelName.textContent = "Choose a channel";
+    renderChannelOptions();
+    handleDataError(error, "Could not load channels");
+    if (!(error instanceof ReauthError)) {
+      setChannelControlsEnabled(true);
+      ui.freshness.textContent = "Could not load channels";
+    }
+    return;
+  }
+
+  const preferred = workspace.selectedChannelId;
   const selected = channels.find(({ id }) => id === preferred) ?? channels[0];
   renderChannelOptions();
   if (selected) await selectChannel(selected.id);
@@ -499,6 +556,7 @@ async function loadWorkspace(): Promise<void> {
     ui.channelName.textContent = "No channels found";
     members = [];
     renderMembers();
+    ui.freshness.textContent = "No channels";
   }
 }
 
@@ -530,8 +588,8 @@ function closePopovers(): void {
 }
 
 async function handleMemberClick(member: Member): Promise<void> {
-  if (useMock) {
-    showToast("DM deep links are ready in the connected desktop app");
+  if (!isTauri) {
+    showToast("Direct messages open from the macOS app");
     return;
   }
   try {
@@ -556,14 +614,34 @@ async function beginOAuth(): Promise<void> {
   } catch (error) {
     showBanner(error instanceof Error ? error.message : "Could not start OAuth", "error");
     renderConnectionSettings();
+    applyEmptyState();
   }
 }
 
+async function handleConnectClick(): Promise<void> {
+  ui.connect.disabled = true;
+  ui.connect.textContent = "Opening browser…";
+  ui.emptyConnect.disabled = true;
+  ui.emptyConnect.textContent = "Opening browser…";
+  await beginOAuth();
+  renderConnectionSettings();
+  applyEmptyState();
+}
+
 ui.workspaceToggle.addEventListener("click", () => setPopover("workspaces"));
-ui.channelToggle.addEventListener("click", () => setPopover("channels"));
+ui.channelToggle.addEventListener("click", () => {
+  if (ui.channelToggle.disabled) return;
+  setPopover("channels");
+});
 ui.settingsToggle.addEventListener("click", () => setPopover("settings"));
 ui.channelSearch.addEventListener("input", () => renderChannelOptions(ui.channelSearch.value));
-ui.refresh.addEventListener("click", () => void loadChannelMembers());
+ui.refresh.addEventListener("click", () => {
+  if (workspaceIsLive() && (channels.length === 0 || !selectedChannelId)) {
+    void loadWorkspace();
+    return;
+  }
+  void loadChannelMembers();
+});
 ui.hidePanel.addEventListener("click", () => void hidePanel());
 
 ui.addWorkspace.addEventListener("click", () => {
@@ -593,11 +671,8 @@ ui.alwaysOnTop.addEventListener("change", async () => {
   }
 });
 
-ui.connect.addEventListener("click", async () => {
-  ui.connect.disabled = true;
-  ui.connect.textContent = "Opening browser…";
-  await beginOAuth();
-});
+ui.connect.addEventListener("click", () => void handleConnectClick());
+ui.emptyConnect.addEventListener("click", () => void handleConnectClick());
 
 ui.logout.addEventListener("click", async () => {
   const workspaceName = activeWorkspace()?.teamName ?? "workspace";
@@ -607,9 +682,7 @@ ui.logout.addEventListener("click", async () => {
     applyStatus();
     closePopovers();
     await loadWorkspace();
-    showToast(
-      useMock ? `Disconnected ${workspaceName}. Showing demo data.` : `Disconnected ${workspaceName}`,
-    );
+    showToast(`Disconnected ${workspaceName}`);
   } catch (error) {
     showBanner(error instanceof Error ? error.message : "Could not disconnect", "error");
   }
@@ -637,6 +710,9 @@ async function initialize(): Promise<void> {
     applyStatus();
     await loadWorkspace();
   } catch (error) {
+    status = { ...EMPTY_STATUS };
+    applyStatus();
+    await loadWorkspace();
     showBanner(error instanceof Error ? error.message : "Could not start the app", "error");
   }
 
@@ -644,6 +720,7 @@ async function initialize(): Promise<void> {
     if (!event.ok) {
       showBanner(event.message, "error");
       renderConnectionSettings();
+      applyEmptyState();
       return;
     }
     status = await getAppStatus();

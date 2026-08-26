@@ -54,7 +54,9 @@ npm install
 npm run tauri dev
 ```
 
-Open settings in the panel, choose **Connect Slack**, and approve the user scopes. The browser returns to the local callback, after which the panel loads the channels you belong to through `users.conversations`.
+Until a workspace is connected, the panel shows a connect empty state (credential setup if `.env` is missing, or **Connect Slack** once credentials are present). Open settings or the empty-state button, choose **Connect Slack**, and approve the user scopes. The browser returns to the local callback, after which the panel loads the channels you belong to through `users.conversations`.
+
+Disconnecting a workspace removes its Keychain token and returns that slot to a reconnect/empty state. It does not invent sample people. If Slack returns `token_revoked`, `token_expired`, `invalid_auth`, a missing user scope, or a network failure, the panel shows that error and a reconnect action instead of falling back to local data.
 
 If your workspace requires admin approval, Slack will keep the install pending until an administrator approves it. If you change scopes later, reconnect the app so Slack grants the updated set.
 

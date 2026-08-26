@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { mockChannelsByTeam, mockMembersByChannel, mockPresence } from "./mock-data";
 import type {
   AppStatus,
   Channel,
@@ -26,7 +25,26 @@ export class ReauthError extends Error {
   }
 }
 
-function commandError(error: unknown): Error {
+const BROWSER_STATUS: AppStatus = {
+  credentialsConfigured: false,
+  workspaces: [],
+  activeTeamId: null,
+  alwaysOnTop: false,
+  redirectUri: "http://127.0.0.1:53641/oauth/callback",
+};
+
+export function commandError(error: unknown): Error {
+  if (typeof error === "string") {
+    const trimmed = error.trim();
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        return commandError(JSON.parse(trimmed) as unknown);
+      } catch {
+        return new Error(error);
+      }
+    }
+    return new Error(error);
+  }
   if (typeof error === "object" && error !== null) {
     const value = error as Record<string, unknown>;
     if (value.kind === "rateLimited") {
@@ -37,7 +55,7 @@ function commandError(error: unknown): Error {
     }
     if (typeof value.message === "string") return new Error(value.message);
   }
-  return new Error(typeof error === "string" ? error : "Native command failed");
+  return new Error("Native command failed");
 }
 
 async function native<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -49,41 +67,19 @@ async function native<T>(command: string, args?: Record<string, unknown>): Promi
 }
 
 export async function getAppStatus(): Promise<AppStatus> {
-  if (!isTauri) {
-    return {
-      credentialsConfigured: false,
-      workspaces: [],
-      activeTeamId: null,
-      alwaysOnTop: false,
-      redirectUri: "http://127.0.0.1:53641/oauth/callback",
-    };
-  }
+  if (!isTauri) return { ...BROWSER_STATUS };
   return native<AppStatus>("get_app_status");
 }
 
-export async function listChannels(
-  teamId: string,
-  useMock: boolean,
-): Promise<Channel[]> {
-  if (useMock) return structuredClone(mockChannelsByTeam[teamId] ?? []);
+export async function listChannels(teamId: string): Promise<Channel[]> {
   return native<Channel[]>("list_channels", { teamId });
 }
 
-export async function loadMembers(
-  teamId: string,
-  channelId: string,
-  useMock: boolean,
-): Promise<Member[]> {
-  if (useMock) return structuredClone(mockMembersByChannel[channelId] ?? []);
+export async function loadMembers(teamId: string, channelId: string): Promise<Member[]> {
   return native<Member[]>("get_channel_members", { teamId, channelId });
 }
 
-export async function getPresence(
-  teamId: string,
-  userId: string,
-  useMock: boolean,
-): Promise<PresenceReply> {
-  if (useMock) return mockPresence(userId);
+export async function getPresence(teamId: string, userId: string): Promise<PresenceReply> {
   return native<PresenceReply>("get_presence", { teamId, userId });
 }
 
@@ -91,10 +87,7 @@ export async function setActiveWorkspace(teamId: string): Promise<void> {
   if (isTauri) await native("set_active_workspace", { teamId });
 }
 
-export async function saveSelectedChannel(
-  teamId: string,
-  channelId: string,
-): Promise<void> {
+export async function saveSelectedChannel(teamId: string, channelId: string): Promise<void> {
   if (isTauri) await native("save_selected_channel", { teamId, channelId });
 }
 
@@ -103,6 +96,9 @@ export async function setAlwaysOnTop(enabled: boolean): Promise<void> {
 }
 
 export async function startOAuth(): Promise<void> {
+  if (!isTauri) {
+    throw new Error("Connect Slack from the macOS desktop app.");
+  }
   await native("start_oauth");
 }
 
