@@ -10,17 +10,21 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
         "title": "Presence for Slack",
-        "width": 320,
-        "height": 620,
-        "minWidth": 280,
-        "minHeight": 420,
-        "maxWidth": 420,
+        "width": 344,
+        "height": 644,
+        "minWidth": 304,
+        "minHeight": 444,
+        "maxWidth": 444,
         "resizable": true,
         "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "backgroundColor": "#00000000",
         "alwaysOnTop": false,
         "center": true,
         "visible": true,
