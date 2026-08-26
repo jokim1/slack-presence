@@ -40,7 +40,7 @@ export function settingsCopy(
   const advancedOpen = isTauri && !status.hostedOAuthReady;
   const advancedSummary = status.hostedOAuthReady
     ? "Use your own Slack app"
-    : "Slack app credentials";
+    : "Connect with your own Slack app";
 
   if (!isTauri) {
     return {
@@ -88,7 +88,7 @@ export function settingsCopy(
       advancedSummary,
       credentialsNote: status.hostedOAuthReady
         ? "One-click connect is configured. Use your own Slack app only if you are self-hosting."
-        : "Add a workspace uses these credentials. One-click connect is unavailable until the shared Slack app is configured.",
+        : "These saved credentials are used when you add another workspace.",
     };
   }
 
@@ -106,7 +106,7 @@ export function settingsCopy(
       advancedSummary,
       credentialsNote: status.credentialsConfigured
         ? ""
-        : "Paste your Slack Client ID and Secret, then reconnect. Applied immediately, no restart.",
+        : "Fill the boxes below, then click Reconnect Slack. They save immediately.",
     };
   }
 
@@ -114,16 +114,17 @@ export function settingsCopy(
     return {
       modeLabel: "Not connected",
       connectionNote:
-        "This build does not include a shared Slack app yet. Paste your Client ID and Secret below to connect. Applied immediately, no restart.",
+        "One-click Slack login is not set up on this build yet. To connect now, use your own Slack app in the boxes below, then click Connect Slack.",
       connectLabel: "Connect Slack",
-      connectHidden: true,
-      connectDisabled: true,
+      connectHidden: false,
+      connectDisabled: false,
       cancelHidden: true,
       logoutHidden: true,
       logoutLabel: "Disconnect workspace",
       advancedOpen: true,
       advancedSummary,
-      credentialsNote: "Create a Slack app under Advanced / self-hosting in SETUP.md, or wait for one-click once the shared app is configured.",
+      credentialsNote:
+        "In a browser open api.slack.com/apps and create an app named Presence for Slack. Under Basic Information, copy Client ID and Client Secret into the boxes below. Click Connect Slack — it saves immediately, no restart. Full steps: SETUP.md, Advanced / self-hosting.",
     };
   }
 
@@ -192,7 +193,7 @@ export function emptyCopy(input: {
         title: "Connect Slack",
         copy: hostedOAuthReady
           ? "Open Settings and try Connect Slack again."
-          : "Paste a Slack Client ID and Secret in Settings to connect. One-click connect is unavailable until the shared Slack app is configured.",
+          : "One-click Slack login is not set up on this build yet. Open Settings if you want to connect with your own Slack app in the meantime.",
         showConnect: true,
         connectLabel: "Open settings",
         showCancel: false,

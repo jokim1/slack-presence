@@ -52,10 +52,12 @@ describe("settingsCopy", () => {
 
   it("opens the credentials form when the shared app is not configured", () => {
     const copy = settingsCopy(unconfigured, undefined, true);
-    expect(copy.connectHidden).toBe(true);
+    expect(copy.connectHidden).toBe(false);
     expect(copy.advancedOpen).toBe(true);
     expect(copy.connectionNote).not.toMatch(/\.env/);
-    expect(copy.connectionNote).toMatch(/Client ID and Secret/);
+    expect(copy.connectionNote).toMatch(/not set up/i);
+    expect(copy.connectionNote).toMatch(/boxes below/);
+    expect(copy.credentialsNote).toMatch(/api\.slack\.com\/apps/);
     expect(copy.credentialsNote).toMatch(/SETUP\.md/);
   });
 
@@ -126,7 +128,9 @@ describe("emptyCopy", () => {
     expect(copy.showConnect).toBe(true);
     expect(copy.connectLabel).toBe("Open settings");
     expect(copy.copy).not.toMatch(/\.env/);
-    expect(copy.copy).toMatch(/Settings/);
+    expect(copy.copy).toMatch(/not set up/i);
+    expect(copy.copy).toMatch(/Open Settings/);
+    expect(copy.copy).not.toMatch(/Client ID/);
   });
 
   it("shows a connect CTA once credentials exist", () => {

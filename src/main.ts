@@ -659,6 +659,18 @@ function setPopover(name: "workspaces" | "channels" | "settings"): void {
   }
 }
 
+function openSettingsPanel(): void {
+  ui.workspacePopover.hidden = true;
+  ui.channelPopover.hidden = true;
+  ui.settingsPopover.hidden = false;
+  ui.workspaceToggle.setAttribute("aria-expanded", "false");
+  ui.channelToggle.setAttribute("aria-expanded", "false");
+  ui.settingsToggle.setAttribute("aria-expanded", "true");
+  ui.advanced.open = true;
+  renderConnectionSettings();
+  window.setTimeout(() => ui.clientId.focus(), 0);
+}
+
 function closePopovers(): void {
   ui.workspacePopover.hidden = true;
   ui.channelPopover.hidden = true;
@@ -720,8 +732,7 @@ async function handleConnectClick(): Promise<void> {
   if (!status.credentialsConfigured) {
     const saved = await persistCredentialsFromForm();
     if (!saved) {
-      setPopover("settings");
-      window.setTimeout(() => ui.clientId.focus(), 0);
+      openSettingsPanel();
       return;
     }
   }
@@ -793,11 +804,7 @@ ui.addWorkspace.addEventListener("click", () => {
     return;
   }
   if (!status.credentialsConfigured) {
-    showBanner(
-      "Open Settings and paste a Slack Client ID and Secret, then add a workspace.",
-      "info",
-    );
-    setPopover("settings");
+    openSettingsPanel();
     return;
   }
   void beginOAuth();
@@ -817,8 +824,18 @@ ui.alwaysOnTop.addEventListener("change", async () => {
   }
 });
 
-ui.connect.addEventListener("click", () => void handleConnectClick());
-ui.emptyConnect.addEventListener("click", () => void handleConnectClick());
+ui.connect.addEventListener("click", (event) => {
+  event.stopPropagation();
+  void handleConnectClick();
+});
+ui.emptyConnect.addEventListener("click", (event) => {
+  event.stopPropagation();
+  if (!status.credentialsConfigured) {
+    openSettingsPanel();
+    return;
+  }
+  void handleConnectClick();
+});
 ui.cancelOAuth.addEventListener("click", () => void handleCancelOAuth());
 ui.emptyCancel.addEventListener("click", () => void handleCancelOAuth());
 ui.saveCredentials.addEventListener("click", async () => {
@@ -849,7 +866,9 @@ document.addEventListener("click", (event) => {
     !ui.channelPopover.contains(target) &&
     !ui.channelToggle.contains(target) &&
     !ui.settingsPopover.contains(target) &&
-    !ui.settingsToggle.contains(target)
+    !ui.settingsToggle.contains(target) &&
+    !ui.emptyConnect.contains(target) &&
+    !ui.emptyCancel.contains(target)
   ) {
     closePopovers();
   }
