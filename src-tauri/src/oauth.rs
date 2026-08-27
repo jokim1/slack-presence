@@ -18,9 +18,9 @@ use crate::{
 
 const USER_SCOPES: &str = "users:read,channels:read,groups:read,im:read,mpim:read";
 pub const DEFAULT_REDIRECT_URI: &str = "http://127.0.0.1:53641/oauth/callback";
-pub const DEFAULT_SLACK_CLIENT_ID: &str = "";
+pub const DEFAULT_SLACK_CLIENT_ID: &str = "1428057940966.11917747024370";
 pub const DEFAULT_OAUTH_EXCHANGE_URL: &str =
-    "https://presence-for-slack-oauth.workers.dev/oauth/exchange";
+    "https://presence-for-slack-oauth.jokim1.workers.dev/oauth/exchange";
 
 #[derive(Clone)]
 pub struct OAuthConfig {
@@ -488,14 +488,18 @@ mod tests {
     }
 
     #[test]
-    fn empty_default_client_id_is_not_configured() {
-        assert!(OAuthConfig::from_values(
+    fn default_credentials_use_hosted_exchange() {
+        let config = OAuthConfig::from_values(
             Some(DEFAULT_SLACK_CLIENT_ID.to_owned()),
             None,
             Some(DEFAULT_OAUTH_EXCHANGE_URL.to_owned()),
             DEFAULT_REDIRECT_URI.to_owned(),
         )
-        .is_none());
+        .expect("default credentials should configure hosted exchange");
+        assert!(config.uses_hosted_exchange());
+        assert!(!config.has_client_secret());
+        assert_eq!(config.public_client_id(), DEFAULT_SLACK_CLIENT_ID);
+        assert_eq!(config.exchange_url(), Some(DEFAULT_OAUTH_EXCHANGE_URL));
     }
 
     #[test]
