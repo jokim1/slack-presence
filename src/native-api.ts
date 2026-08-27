@@ -154,6 +154,14 @@ export async function listenForOAuth(
   return listen<OAuthComplete>("oauth://complete", ({ payload }) => handler(payload));
 }
 
+export async function listenForAuthorizeUrl(
+  handler: (url: string) => void,
+): Promise<() => void> {
+  if (!isTauri) return () => undefined;
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<string>("oauth://authorize-url", ({ payload }) => handler(payload));
+}
+
 export async function listenForPanelVisibility(
   handler: (event: PanelVisibility) => void,
 ): Promise<() => void> {

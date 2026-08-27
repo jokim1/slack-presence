@@ -154,6 +154,9 @@ pub async fn start(app: AppHandle) -> CommandResult<()> {
         ("state", state_token.as_str()),
     ]);
 
+    let authorize_url = authorize.to_string();
+    let _ = app.emit("oauth://authorize-url", &authorize_url);
+
     let (cancel_tx, cancel_rx) = oneshot::channel();
     {
         let mut abort = state
@@ -167,14 +170,6 @@ pub async fn start(app: AppHandle) -> CommandResult<()> {
         }
         *abort = Some(cancel_tx);
     }
-
-    Command::new("open")
-        .arg(authorize.as_str())
-        .spawn()
-        .map_err(|_| {
-            let _ = take_oauth_abort(&app);
-            CommandError::message("Could not open the authorization page")
-        })?;
 
     tauri::async_runtime::spawn(async move {
         let result = complete(listener, &app, config, state_token, cancel_rx).await;
@@ -191,6 +186,11 @@ pub async fn start(app: AppHandle) -> CommandResult<()> {
         };
         let _ = app.emit("oauth://complete", payload);
     });
+
+    if let Err(error) = Command::new("open").arg(&authorize_url).spawn() {
+        eprintln!("Failed to open Slack authorization URL: {error}");
+    }
+
     Ok(())
 }
 

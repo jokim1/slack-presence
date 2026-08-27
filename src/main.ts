@@ -8,6 +8,7 @@ import {
   hidePanel,
   isTauri,
   listChannels,
+  listenForAuthorizeUrl,
   listenForOAuth,
   listenForPanelVisibility,
   loadMembers,
@@ -107,6 +108,13 @@ app.innerHTML = `
       <p class="settings-note" id="connection-note"></p>
       <button class="primary-button" id="connect-button">Connect Slack</button>
       <button class="text-button" id="cancel-oauth" hidden>Cancel</button>
+      <div class="oauth-link" id="settings-oauth-link-wrap" hidden>
+        <p>or copy this link into your browser</p>
+        <div class="oauth-link-row">
+          <input id="settings-oauth-link" type="text" readonly />
+          <button class="primary-button" id="copy-settings-oauth-link" type="button">Copy</button>
+        </div>
+      </div>
       <details class="advanced-credentials" id="advanced-credentials">
         <summary id="advanced-summary">Use your own Slack app</summary>
         <p class="settings-note" id="credentials-note"></p>
@@ -139,6 +147,13 @@ app.innerHTML = `
         <p id="empty-copy">Connect a workspace to see who's around in a channel you belong to.</p>
         <button class="primary-button" id="empty-connect" hidden>Connect Slack</button>
         <button class="text-button" id="empty-cancel" hidden>Cancel</button>
+        <div class="oauth-link" id="oauth-link-wrap" hidden>
+          <p>or copy this link into your browser</p>
+          <div class="oauth-link-row">
+            <input id="oauth-link" type="text" readonly />
+            <button class="primary-button" id="copy-oauth-link" type="button">Copy</button>
+          </div>
+        </div>
       </div>
     </main>
 
@@ -191,6 +206,12 @@ const ui = {
   emptyCopy: element<HTMLElement>("#empty-copy"),
   emptyConnect: element<HTMLButtonElement>("#empty-connect"),
   emptyCancel: element<HTMLButtonElement>("#empty-cancel"),
+  oauthLinkWrap: element<HTMLElement>("#oauth-link-wrap"),
+  oauthLink: element<HTMLInputElement>("#oauth-link"),
+  copyOauthLink: element<HTMLButtonElement>("#copy-oauth-link"),
+  settingsOauthLinkWrap: element<HTMLElement>("#settings-oauth-link-wrap"),
+  settingsOauthLink: element<HTMLInputElement>("#settings-oauth-link"),
+  copySettingsOauthLink: element<HTMLButtonElement>("#copy-settings-oauth-link"),
   peopleCount: element<HTMLElement>("#people-count"),
   activeCount: element<HTMLElement>("#active-count"),
   freshness: element<HTMLElement>("#freshness"),
@@ -219,6 +240,7 @@ let selectedChannelId = "";
 let panelVisible = true;
 let toastTimer: number | undefined;
 let oauthInFlight = false;
+let oauthAuthorizeUrl = "";
 
 const scheduler = new PresenceScheduler({
   request: (userId) => getPresence(activeTeamId, userId),
@@ -350,7 +372,17 @@ function applyEmptyState(): void {
   ui.emptyConnect.textContent = copy.connectLabel;
   ui.emptyConnect.disabled = false;
   ui.emptyCancel.hidden = !copy.showCancel;
+  updateOAuthLinkControls(copy.showCancel);
   ui.emptyState.hidden = members.length > 0;
+}
+
+function updateOAuthLinkControls(show: boolean): void {
+  ui.oauthLink.value = oauthAuthorizeUrl;
+  ui.settingsOauthLink.value = oauthAuthorizeUrl;
+  ui.oauthLinkWrap.hidden = !show || !oauthAuthorizeUrl;
+  ui.settingsOauthLinkWrap.hidden = !show || !oauthAuthorizeUrl;
+  ui.copyOauthLink.disabled = !oauthAuthorizeUrl;
+  ui.copySettingsOauthLink.disabled = !oauthAuthorizeUrl;
 }
 
 function renderMembers(): void {
@@ -489,6 +521,7 @@ function renderConnectionSettings(): void {
   ui.connect.hidden = copy.connectHidden;
   ui.connect.disabled = copy.connectDisabled;
   ui.cancelOAuth.hidden = copy.cancelHidden;
+  updateOAuthLinkControls(!copy.cancelHidden);
   ui.logout.hidden = copy.logoutHidden;
   ui.logout.textContent = copy.logoutLabel;
   ui.advancedSummary.textContent = copy.advancedSummary;
@@ -707,6 +740,7 @@ async function beginOAuth(): Promise<boolean> {
   }
   try {
     oauthInFlight = true;
+    oauthAuthorizeUrl = "";
     status.oauthInProgress = true;
     renderConnectionSettings();
     applyEmptyState();
@@ -715,6 +749,7 @@ async function beginOAuth(): Promise<boolean> {
     return true;
   } catch (error) {
     oauthInFlight = false;
+    oauthAuthorizeUrl = "";
     status.oauthInProgress = false;
     showBanner(error instanceof Error ? error.message : "Could not start OAuth", "error");
     renderConnectionSettings();
@@ -838,6 +873,19 @@ ui.emptyConnect.addEventListener("click", (event) => {
 });
 ui.cancelOAuth.addEventListener("click", () => void handleCancelOAuth());
 ui.emptyCancel.addEventListener("click", () => void handleCancelOAuth());
+async function copyOAuthLink(input: HTMLInputElement): Promise<void> {
+  if (!oauthAuthorizeUrl) return;
+  try {
+    await navigator.clipboard.writeText(oauthAuthorizeUrl);
+    showToast("Slack link copied");
+  } catch {
+    input.focus();
+    input.select();
+    showToast("Slack link selected");
+  }
+}
+ui.copyOauthLink.addEventListener("click", () => void copyOAuthLink(ui.oauthLink));
+ui.copySettingsOauthLink.addEventListener("click", () => void copyOAuthLink(ui.settingsOauthLink));
 ui.saveCredentials.addEventListener("click", async () => {
   const saved = await persistCredentialsFromForm();
   if (saved) showToast("Credentials saved");
@@ -889,6 +937,7 @@ async function initialize(): Promise<void> {
 
   await listenForOAuth(async (event) => {
     oauthInFlight = false;
+    oauthAuthorizeUrl = "";
     status.oauthInProgress = false;
     if (!event.ok) {
       if (/cancell?ed/i.test(event.message)) {
@@ -907,6 +956,11 @@ async function initialize(): Promise<void> {
     await loadWorkspace();
     hideBanner();
     showToast(`Connected to ${activeWorkspace()?.teamName ?? "Slack"}`);
+  });
+
+  await listenForAuthorizeUrl((url) => {
+    oauthAuthorizeUrl = url;
+    applyEmptyState();
   });
 
   await listenForPanelVisibility(({ visible }) => {
