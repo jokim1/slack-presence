@@ -171,3 +171,15 @@ export async function listenForPanelVisibility(
     handler(payload),
   );
 }
+
+export async function listenForTrayConnect(handler: () => void): Promise<() => void> {
+  if (!isTauri) return () => undefined;
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("tray://connect", () => handler());
+}
+
+export async function listenForTraySettings(handler: () => void): Promise<() => void> {
+  if (!isTauri) return () => undefined;
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("tray://settings", () => handler());
+}

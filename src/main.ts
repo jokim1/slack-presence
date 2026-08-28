@@ -11,6 +11,8 @@ import {
   listenForAuthorizeUrl,
   listenForOAuth,
   listenForPanelVisibility,
+  listenForTrayConnect,
+  listenForTraySettings,
   loadMembers,
   openDm,
   ReauthError,
@@ -967,6 +969,21 @@ async function initialize(): Promise<void> {
     panelVisible = visible;
     if (!visible && !status.alwaysOnTop) scheduler.pause();
     else scheduler.resume();
+  });
+
+  await listenForTrayConnect(async () => {
+    status = await getAppStatus();
+    applyStatus();
+    if (!status.credentialsConfigured) {
+      openSettingsPanel();
+      return;
+    }
+    closePopovers();
+    void beginOAuth();
+  });
+
+  await listenForTraySettings(() => {
+    openSettingsPanel();
   });
 }
 
