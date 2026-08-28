@@ -1,6 +1,6 @@
 # Connect Presence for Slack to a workspace
 
-Click **Connect Slack** in the app. Slack's authorization page opens in your browser. Sign in (and complete 2FA if asked). The app listens on a local loopback callback, validates OAuth `state`, and stores the user token in macOS Keychain. You do not paste a link or token, and you do not restart the app.
+Click **Connect Slack** in the app. Slack's authorization page opens in your browser. Sign in (and complete 2FA if asked). Slack returns to the shared HTTPS worker, which relays the callback to the app's local loopback listener. The app validates OAuth `state` and stores the user token in macOS Keychain. You do not paste a link or token, and you do not restart the app.
 
 Until a workspace is connected, the panel shows a connect empty state. While Slack's page is open, the panel shows that it is waiting and a **Cancel** control. If a workspace is already connected, Connect is not offered again for that workspace; use **Add a workspace** in the switcher to connect another one.
 
@@ -11,6 +11,12 @@ If your workspace requires admin approval, Slack will keep the install pending u
 Click the workspace name under the panel title and choose **Add a workspace**. On Slack's authorization page, use the workspace picker in the top-right corner to select the other workspace before approving.
 
 A Slack app can only be installed to workspaces beyond the one it was created in after distribution is enabled: in the app settings, open **Manage Distribution**, complete the checklist, and choose **Activate Public Distribution**.
+
+The shared Slack app must register this exact HTTPS redirect URL:
+
+```text
+https://presence-for-slack-oauth.jokim1.workers.dev/oauth/callback
+```
 
 The app stores one `xoxp` token per workspace in macOS Keychain and remembers each workspace's selected channel. Switch between workspaces from the same menu; **Disconnect** in settings removes only the active workspace.
 

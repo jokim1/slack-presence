@@ -17,7 +17,9 @@ use crate::{
 };
 
 const USER_SCOPES: &str = "users:read,channels:read,groups:read,im:read,mpim:read";
-pub const DEFAULT_REDIRECT_URI: &str = "http://127.0.0.1:53641/oauth/callback";
+pub const DEFAULT_REDIRECT_URI: &str =
+    "https://presence-for-slack-oauth.jokim1.workers.dev/oauth/callback";
+pub const LOOPBACK_REDIRECT_URI: &str = "http://127.0.0.1:53641/oauth/callback";
 pub const DEFAULT_SLACK_CLIENT_ID: &str = "1428057940966.11917747024370";
 pub const DEFAULT_OAUTH_EXCHANGE_URL: &str =
     "https://presence-for-slack-oauth.jokim1.workers.dev/oauth/exchange";
@@ -32,25 +34,28 @@ pub struct OAuthConfig {
 
 impl OAuthConfig {
     pub fn from_settings(settings: &Settings) -> Option<Self> {
+        let client_secret = first_filled([
+            settings.slack_client_secret.clone(),
+            std::env::var("PRESENCE_SLACK_CLIENT_SECRET").ok(),
+        ])
+        .filter(|value| !is_placeholder_secret(value));
+        let redirect_uri = std::env::var("PRESENCE_SLACK_REDIRECT_URI")
+            .ok()
+            .and_then(nonempty)
+            .unwrap_or_else(|| default_redirect_uri(client_secret.is_some()).to_owned());
         Self::from_values(
             first_filled([
                 settings.slack_client_id.clone(),
                 std::env::var("PRESENCE_SLACK_CLIENT_ID").ok(),
                 Some(DEFAULT_SLACK_CLIENT_ID.to_owned()),
             ]),
-            first_filled([
-                settings.slack_client_secret.clone(),
-                std::env::var("PRESENCE_SLACK_CLIENT_SECRET").ok(),
-            ]),
+            client_secret,
             first_filled([
                 settings.slack_oauth_exchange_url.clone(),
                 std::env::var("PRESENCE_SLACK_OAUTH_EXCHANGE_URL").ok(),
                 Some(DEFAULT_OAUTH_EXCHANGE_URL.to_owned()),
             ]),
-            std::env::var("PRESENCE_SLACK_REDIRECT_URI")
-                .ok()
-                .and_then(nonempty)
-                .unwrap_or_else(|| DEFAULT_REDIRECT_URI.to_owned()),
+            redirect_uri,
         )
     }
 
@@ -120,8 +125,8 @@ pub async fn start(app: AppHandle) -> CommandResult<()> {
     })?;
     drop(settings);
 
-    let redirect = validate_redirect(&config.redirect_uri)?;
-    let port = redirect
+    let callback = callback_listener_url(&config.redirect_uri)?;
+    let port = callback
         .port_or_known_default()
         .ok_or_else(|| CommandError::message("The OAuth callback needs a port"))?;
     {
@@ -145,16 +150,7 @@ pub async fn start(app: AppHandle) -> CommandResult<()> {
         })?;
 
     let state_token = Uuid::new_v4().to_string();
-    let mut authorize = Url::parse("https://slack.com/oauth/v2/authorize")
-        .map_err(|_| CommandError::message("Could not build the Slack authorization URL"))?;
-    authorize.query_pairs_mut().extend_pairs([
-        ("client_id", config.client_id.as_str()),
-        ("user_scope", USER_SCOPES),
-        ("redirect_uri", config.redirect_uri.as_str()),
-        ("state", state_token.as_str()),
-    ]);
-
-    let authorize_url = authorize.to_string();
+    let authorize_url = build_authorize_url(&config, &state_token)?.to_string();
     let _ = app.emit("oauth://authorize-url", &authorize_url);
 
     let (cancel_tx, cancel_rx) = oneshot::channel();
@@ -376,12 +372,46 @@ fn token_from_oauth(oauth: OAuthResponse) -> CommandResult<String> {
 pub fn validate_redirect(redirect_uri: &str) -> CommandResult<Url> {
     let redirect = Url::parse(redirect_uri)
         .map_err(|_| CommandError::message("The OAuth callback URL is invalid"))?;
-    if redirect.scheme() != "http" || redirect.host_str() != Some("127.0.0.1") {
+    let public_callback = redirect.as_str() == DEFAULT_REDIRECT_URI;
+    let loopback_callback = redirect.scheme() == "http"
+        && redirect.host_str() == Some("127.0.0.1")
+        && redirect.path() == "/oauth/callback";
+    if !public_callback && !loopback_callback {
         return Err(CommandError::message(
-            "The OAuth callback must use http://127.0.0.1",
+            "The OAuth callback must use the hosted HTTPS callback or http://127.0.0.1/oauth/callback",
         ));
     }
     Ok(redirect)
+}
+
+fn callback_listener_url(redirect_uri: &str) -> CommandResult<Url> {
+    let redirect = validate_redirect(redirect_uri)?;
+    if redirect.scheme() == "https" {
+        return Url::parse(LOOPBACK_REDIRECT_URI)
+            .map_err(|_| CommandError::message("The OAuth callback URL is invalid"));
+    }
+    Ok(redirect)
+}
+
+fn build_authorize_url(config: &OAuthConfig, state: &str) -> CommandResult<Url> {
+    validate_redirect(&config.redirect_uri)?;
+    let mut authorize = Url::parse("https://slack.com/oauth/v2/authorize")
+        .map_err(|_| CommandError::message("Could not build the Slack authorization URL"))?;
+    authorize.query_pairs_mut().extend_pairs([
+        ("client_id", config.client_id.as_str()),
+        ("user_scope", USER_SCOPES),
+        ("redirect_uri", config.redirect_uri.as_str()),
+        ("state", state),
+    ]);
+    Ok(authorize)
+}
+
+fn default_redirect_uri(has_client_secret: bool) -> &'static str {
+    if has_client_secret {
+        LOOPBACK_REDIRECT_URI
+    } else {
+        DEFAULT_REDIRECT_URI
+    }
 }
 
 pub fn validate_exchange_url(exchange_url: &str) -> CommandResult<Url> {
@@ -503,6 +533,41 @@ mod tests {
     }
 
     #[test]
+    fn hosted_oauth_uses_https_redirect_and_loopback_listener() {
+        assert_eq!(
+            default_redirect_uri(false),
+            "https://presence-for-slack-oauth.jokim1.workers.dev/oauth/callback"
+        );
+        let listener = callback_listener_url(DEFAULT_REDIRECT_URI).expect("listener callback");
+        assert_eq!(listener.as_str(), LOOPBACK_REDIRECT_URI);
+    }
+
+    #[test]
+    fn byo_oauth_keeps_the_direct_loopback_redirect() {
+        assert_eq!(default_redirect_uri(true), LOOPBACK_REDIRECT_URI);
+        let listener = callback_listener_url(LOOPBACK_REDIRECT_URI).expect("listener callback");
+        assert_eq!(listener.as_str(), LOOPBACK_REDIRECT_URI);
+    }
+
+    #[test]
+    fn slack_authorize_url_carries_the_https_redirect_and_csrf_state() {
+        let config = OAuthConfig::from_values(
+            Some(DEFAULT_SLACK_CLIENT_ID.to_owned()),
+            None,
+            Some(DEFAULT_OAUTH_EXCHANGE_URL.to_owned()),
+            DEFAULT_REDIRECT_URI.to_owned(),
+        )
+        .expect("hosted config");
+        let authorize = build_authorize_url(&config, "csrf-state").expect("authorize URL");
+        let query: HashMap<_, _> = authorize.query_pairs().into_owned().collect();
+        assert_eq!(
+            query.get("redirect_uri").map(String::as_str),
+            Some(DEFAULT_REDIRECT_URI)
+        );
+        assert_eq!(query.get("state").map(String::as_str), Some("csrf-state"));
+    }
+
+    #[test]
     fn example_env_placeholders_are_not_configured() {
         assert!(OAuthConfig::from_values(
             Some("1234567890.1234567890".into()),
@@ -548,6 +613,13 @@ mod tests {
         .is_ok());
         assert!(validate_exchange_url("http://127.0.0.1:8787/oauth/exchange").is_ok());
         assert!(validate_exchange_url("http://example.com/oauth/exchange").is_err());
+    }
+
+    #[test]
+    fn redirect_rejects_untrusted_https_callbacks() {
+        assert!(validate_redirect(DEFAULT_REDIRECT_URI).is_ok());
+        assert!(validate_redirect(LOOPBACK_REDIRECT_URI).is_ok());
+        assert!(validate_redirect("https://evil.example/oauth/callback").is_err());
     }
 
     #[test]

@@ -22,6 +22,10 @@ interface SlackOAuthResponse {
   };
 }
 
+const HTTPS_CALLBACK =
+  "https://presence-for-slack-oauth.jokim1.workers.dev/oauth/callback";
+const LOOPBACK_CALLBACK = "http://127.0.0.1:53641/oauth/callback";
+
 function json(status: number, body: Record<string, unknown>): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -37,6 +41,7 @@ function slackApiBase(env: Env): string {
 export function isAllowedRedirect(uri: string): boolean {
   try {
     const url = new URL(uri);
+    if (url.href === HTTPS_CALLBACK) return true;
     return (
       url.protocol === "http:" &&
       url.hostname === "127.0.0.1" &&
@@ -45,6 +50,16 @@ export function isAllowedRedirect(uri: string): boolean {
   } catch {
     return false;
   }
+}
+
+function relayCallback(url: URL): Response {
+  return new Response(null, {
+    status: 302,
+    headers: {
+      "cache-control": "no-store",
+      location: `${LOOPBACK_CALLBACK}${url.search}`,
+    },
+  });
 }
 
 function readToken(payload: SlackOAuthResponse): string | undefined {
@@ -58,6 +73,9 @@ export async function handleRequest(
   slackFetch: SlackFetcher = fetch,
 ): Promise<Response> {
   const url = new URL(request.url);
+  if (request.method === "GET" && url.pathname === "/oauth/callback") {
+    return relayCallback(url);
+  }
   if (request.method !== "POST" || url.pathname !== "/oauth/exchange") {
     return json(404, { ok: false, error: "not_found" });
   }

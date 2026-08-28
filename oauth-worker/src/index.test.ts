@@ -3,6 +3,10 @@ import { AddressInfo } from "node:net";
 import { afterAll, describe, expect, it } from "vitest";
 import { handleRequest, isAllowedRedirect, type Env } from "./index";
 
+const HTTPS_REDIRECT =
+  "https://presence-for-slack-oauth.jokim1.workers.dev/oauth/callback";
+const LOOPBACK_REDIRECT = "http://127.0.0.1:53641/oauth/callback";
+
 const env: Env = {
   SLACK_CLIENT_ID: "123.456",
   SLACK_CLIENT_SECRET: "super-secret",
@@ -17,11 +21,12 @@ function exchangeRequest(body: unknown): Request {
 }
 
 describe("isAllowedRedirect", () => {
-  it("accepts the app loopback callback", () => {
-    expect(isAllowedRedirect("http://127.0.0.1:53641/oauth/callback")).toBe(true);
+  it("accepts the public HTTPS and legacy loopback callbacks", () => {
+    expect(isAllowedRedirect(HTTPS_REDIRECT)).toBe(true);
+    expect(isAllowedRedirect(LOOPBACK_REDIRECT)).toBe(true);
   });
 
-  it("rejects anything that is not the loopback callback", () => {
+  it("rejects callbacks outside the exact hosted or loopback routes", () => {
     expect(isAllowedRedirect("https://example.com/oauth/callback")).toBe(false);
     expect(isAllowedRedirect("http://localhost:53641/oauth/callback")).toBe(false);
     expect(isAllowedRedirect("http://127.0.0.1:53641/oauth/other")).toBe(false);
@@ -29,6 +34,33 @@ describe("isAllowedRedirect", () => {
 });
 
 describe("handleRequest", () => {
+  it("relays Slack's callback query to the app loopback", async () => {
+    const response = await handleRequest(
+      new Request(
+        `${HTTPS_REDIRECT}?code=slack-code&state=csrf-state&team=example`,
+      ),
+      env,
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(
+      `${LOOPBACK_REDIRECT}?code=slack-code&state=csrf-state&team=example`,
+    );
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("relays Slack errors and state to the app loopback", async () => {
+    const response = await handleRequest(
+      new Request(`${HTTPS_REDIRECT}?error=access_denied&state=csrf-state`),
+      env,
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(
+      `${LOOPBACK_REDIRECT}?error=access_denied&state=csrf-state`,
+    );
+  });
+
   it("rejects unknown routes", async () => {
     const response = await handleRequest(
       new Request("https://worker.test/health"),
@@ -66,7 +98,7 @@ describe("handleRequest", () => {
     const response = await handleRequest(
       exchangeRequest({
         code: "slack-code",
-        redirect_uri: "http://127.0.0.1:53641/oauth/callback",
+        redirect_uri: HTTPS_REDIRECT,
       }),
       env,
       async (url, init) => {
@@ -91,6 +123,9 @@ describe("handleRequest", () => {
     expect(seen.url).toBe("https://slack.com/api/oauth.v2.access");
     expect(seen.body).toContain("client_secret=super-secret");
     expect(seen.body).toContain("code=slack-code");
+    expect(seen.body).toContain(
+      "redirect_uri=https%3A%2F%2Fpresence-for-slack-oauth.jokim1.workers.dev%2Foauth%2Fcallback",
+    );
   });
 
   it("passes Slack's error through without a token", async () => {
