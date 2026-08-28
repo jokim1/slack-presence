@@ -303,7 +303,7 @@ async fn handle_callback(
     let state = app.state::<AppState>();
     let token = exchange_code(&state.client, &state.exchange_client, &config, code).await?;
     let auth = slack::auth_test(&state.client, &token).await?;
-    crate::adopt_workspace(&state, &auth.team_id, &auth.team, token).await?;
+    crate::adopt_workspace(app, &state, &auth.team_id, &auth.team, token).await?;
     Ok(auth.team)
 }
 

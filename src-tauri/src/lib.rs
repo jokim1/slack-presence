@@ -17,7 +17,7 @@ use settings::{SettingsStore, WorkspaceSettings};
 use slack::ProfileCache;
 use tauri::{
     image::Image,
-    menu::{Menu, MenuItem},
+    menu::{AboutMetadata, IsMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, PhysicalPosition, Position, State, WindowEvent,
 };
@@ -25,6 +25,7 @@ use tokio::sync::{oneshot, RwLock};
 
 const KEYCHAIN_SERVICE: &str = "com.josephkim.presence-for-slack";
 const LEGACY_KEYCHAIN_ACCOUNT: &str = "slack-user-token";
+const TRAY_ID: &str = "main";
 
 pub(crate) struct WorkspaceSession {
     pub token: String,
@@ -75,6 +76,12 @@ struct AppStatus {
 #[derive(Clone, Serialize)]
 struct PanelVisibility {
     visible: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct TrayMenuModel {
+    connect_label: &'static str,
+    workspace_labels: Vec<String>,
 }
 
 #[tauri::command]
@@ -269,7 +276,11 @@ fn hide_panel(app: AppHandle) -> CommandResult<()> {
 }
 
 #[tauri::command]
-async fn disconnect_workspace(team_id: String, state: State<'_, AppState>) -> CommandResult<()> {
+async fn disconnect_workspace(
+    team_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
     validate_slack_id(&team_id, &['T', 'E'])?;
     delete_token_from_keychain(&team_id)?;
     state.sessions.write().await.remove(&team_id);
@@ -283,10 +294,12 @@ async fn disconnect_workspace(team_id: String, state: State<'_, AppState>) -> Co
                 .first()
                 .map(|workspace| workspace.team_id.clone());
         }
-    })
+    })?;
+    refresh_tray_menu(&app)
 }
 
 pub(crate) async fn adopt_workspace(
+    app: &AppHandle,
     state: &AppState,
     team_id: &str,
     team_name: &str,
@@ -313,7 +326,8 @@ pub(crate) async fn adopt_workspace(
             });
         }
         settings.active_team_id = Some(team_id.to_owned());
-    })
+    })?;
+    refresh_tray_menu(app)
 }
 
 async fn session_for(
@@ -423,12 +437,163 @@ fn set_panel_visibility(app: &AppHandle, visible: bool) -> CommandResult<()> {
     Ok(())
 }
 
+fn tray_menu_model(
+    settings: &[WorkspaceSettings],
+    sessions: &HashMap<String, Arc<WorkspaceSession>>,
+) -> TrayMenuModel {
+    let workspace_labels = settings
+        .iter()
+        .filter(|workspace| sessions.contains_key(&workspace.team_id))
+        .map(|workspace| workspace.team_name.clone())
+        .collect::<Vec<_>>();
+
+    TrayMenuModel {
+        connect_label: if workspace_labels.is_empty() {
+            "Connect..."
+        } else {
+            "Reconnect..."
+        },
+        workspace_labels: if workspace_labels.is_empty() {
+            vec!["Not connected".to_owned()]
+        } else {
+            workspace_labels
+        },
+    }
+}
+
+fn build_tray_menu(app: &AppHandle) -> CommandResult<Menu<tauri::Wry>> {
+    let state = app.state::<AppState>();
+    let settings = state.settings.read()?;
+    let sessions = state
+        .sessions
+        .try_read()
+        .map_err(|_| CommandError::message("Could not read connected workspaces"))?;
+    let model = tray_menu_model(&settings.workspaces, &sessions);
+
+    let connect = MenuItem::with_id(app, "connect", model.connect_label, true, None::<&str>)
+        .map_err(|_| CommandError::message("Could not build the menu-bar menu"))?;
+    let settings_item = MenuItem::with_id(app, "settings", "Settings...", true, None::<&str>)
+        .map_err(|_| CommandError::message("Could not build the menu-bar menu"))?;
+    let show_hide = MenuItem::with_id(app, "show_hide", "Show / Hide", true, None::<&str>)
+        .map_err(|_| CommandError::message("Could not build the menu-bar menu"))?;
+    let first_separator = PredefinedMenuItem::separator(app)
+        .map_err(|_| CommandError::message("Could not build the menu-bar menu"))?;
+    let about = PredefinedMenuItem::about(
+        app,
+        Some("About Presence for Slack"),
+        Some(AboutMetadata {
+            name: Some("Presence for Slack".to_owned()),
+            version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+            ..Default::default()
+        }),
+    )
+    .map_err(|_| CommandError::message("Could not build the menu-bar menu"))?;
+    let second_separator = PredefinedMenuItem::separator(app)
+        .map_err(|_| CommandError::message("Could not build the menu-bar menu"))?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)
+        .map_err(|_| CommandError::message("Could not build the menu-bar menu"))?;
+
+    let workspace_items = model
+        .workspace_labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| {
+            MenuItem::with_id(
+                app,
+                format!("workspace_{index}"),
+                label,
+                false,
+                None::<&str>,
+            )
+        })
+        .collect::<tauri::Result<Vec<_>>>()
+        .map_err(|_| CommandError::message("Could not build the menu-bar menu"))?;
+
+    let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = Vec::new();
+    items.push(&connect);
+    for item in &workspace_items {
+        items.push(item);
+    }
+    items.push(&settings_item);
+    items.push(&show_hide);
+    items.push(&first_separator);
+    items.push(&about);
+    items.push(&second_separator);
+    items.push(&quit);
+
+    Menu::with_items(app, &items)
+        .map_err(|_| CommandError::message("Could not build the menu-bar menu"))
+}
+
+pub(crate) fn refresh_tray_menu(app: &AppHandle) -> CommandResult<()> {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return Ok(());
+    };
+    let menu = build_tray_menu(app)?;
+    tray.set_menu(Some(menu))
+        .map_err(|_| CommandError::message("Could not update the menu-bar menu"))
+}
+
 fn toggle_panel(app: &AppHandle) {
     let visible = app
         .get_webview_window("main")
         .and_then(|window| window.is_visible().ok())
         .unwrap_or(false);
     let _ = set_panel_visibility(app, !visible);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn workspace(team_id: &str, team_name: &str) -> WorkspaceSettings {
+        WorkspaceSettings {
+            team_id: team_id.to_owned(),
+            team_name: team_name.to_owned(),
+            selected_channel_id: None,
+        }
+    }
+
+    #[test]
+    fn tray_menu_model_shows_connect_when_no_workspace_is_live() {
+        let settings = vec![workspace("T1AAAAAA", "Acme")];
+        let sessions = HashMap::new();
+
+        assert_eq!(
+            tray_menu_model(&settings, &sessions),
+            TrayMenuModel {
+                connect_label: "Connect...",
+                workspace_labels: vec!["Not connected".to_owned()],
+            }
+        );
+    }
+
+    #[test]
+    fn tray_menu_model_shows_connected_workspace_names() {
+        let settings = vec![
+            workspace("T1AAAAAA", "Acme"),
+            workspace("T2BBBBBB", "Beta"),
+            workspace("T3CCCCCC", "Stale"),
+        ];
+        let sessions = HashMap::from([
+            (
+                "T1AAAAAA".to_owned(),
+                WorkspaceSession::new("token-1".to_owned()),
+            ),
+            (
+                "T2BBBBBB".to_owned(),
+                WorkspaceSession::new("token-2".to_owned()),
+            ),
+        ]);
+
+        assert_eq!(
+            tray_menu_model(&settings, &sessions),
+            TrayMenuModel {
+                connect_label: "Reconnect...",
+                workspace_labels: vec!["Acme".to_owned(), "Beta".to_owned()],
+            }
+        );
+    }
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -465,36 +630,44 @@ pub fn run() {
                 }
             }
 
-            // Accessory apps have no Dock icon / app menu bar; the tray menu is
-            // the quit affordance. Left-click still toggles the panel.
-            let show_hide =
-                MenuItem::with_id(app, "show_hide", "Show / Hide", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_hide, &quit])?;
-            TrayIconBuilder::new()
+            let menu = build_tray_menu(app.handle())?;
+            TrayIconBuilder::with_id(TRAY_ID)
                 .icon(Image::from_bytes(include_bytes!("../icons/32x32.png"))?)
                 .icon_as_template(false)
                 .tooltip("Presence for Slack")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
+                    "connect" => {
+                        let _ = set_panel_visibility(app, true);
+                        let _ = app.emit("tray://connect", ());
+                    }
+                    "settings" => {
+                        let _ = set_panel_visibility(app, true);
+                        let _ = app.emit("tray://settings", ());
+                    }
                     "show_hide" => toggle_panel(app),
                     "quit" => {
                         app.exit(0);
                     }
                     _ => {}
                 })
-                .on_tray_icon_event(|tray, event| {
-                    if matches!(
-                        event,
-                        TrayIconEvent::Click {
-                            button: MouseButton::Left,
-                            button_state: MouseButtonState::Up,
-                            ..
-                        }
-                    ) {
+                .on_tray_icon_event(|tray, event| match event {
+                    TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } => {
                         toggle_panel(tray.app_handle());
                     }
+                    TrayIconEvent::Click {
+                        button: MouseButton::Right,
+                        button_state: MouseButtonState::Down,
+                        ..
+                    } => {
+                        let _ = refresh_tray_menu(tray.app_handle());
+                    }
+                    _ => {}
                 })
                 .build(app)?;
             Ok(())
