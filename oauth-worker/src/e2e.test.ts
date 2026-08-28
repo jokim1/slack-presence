@@ -7,7 +7,9 @@ import { unstable_dev, type UnstableDevWorker } from "wrangler";
 
 const srcDir = path.dirname(fileURLToPath(import.meta.url));
 
-const REDIRECT = "http://127.0.0.1:53641/oauth/callback";
+const REDIRECT =
+  "https://presence-for-slack-oauth.jokim1.workers.dev/oauth/callback";
+const LOOPBACK_REDIRECT = "http://127.0.0.1:53641/oauth/callback";
 
 describe("wrangler-dev exchange against a mock Slack API", () => {
   let slack: Server;
@@ -72,5 +74,16 @@ describe("wrangler-dev exchange against a mock Slack API", () => {
       ok: true,
       access_token: "xoxp-wrangler-e2e",
     });
+  });
+
+  it("relays the HTTPS callback to the desktop loopback", async () => {
+    const response = await worker.fetch(
+      "http://worker.test/oauth/callback?code=wrangler-code&state=csrf-state",
+      { redirect: "manual" },
+    );
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(
+      `${LOOPBACK_REDIRECT}?code=wrangler-code&state=csrf-state`,
+    );
   });
 });

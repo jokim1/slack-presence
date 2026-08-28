@@ -35,7 +35,8 @@ const BROWSER_STATUS: AppStatus = {
   workspaces: [],
   activeTeamId: null,
   alwaysOnTop: false,
-  redirectUri: "http://127.0.0.1:53641/oauth/callback",
+  redirectUri:
+    "https://presence-for-slack-oauth.jokim1.workers.dev/oauth/callback",
 };
 
 export function commandError(error: unknown): Error {
