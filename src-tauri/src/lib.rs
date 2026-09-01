@@ -660,13 +660,6 @@ pub fn run() {
                     } => {
                         toggle_panel(tray.app_handle());
                     }
-                    TrayIconEvent::Click {
-                        button: MouseButton::Right,
-                        button_state: MouseButtonState::Down,
-                        ..
-                    } => {
-                        let _ = refresh_tray_menu(tray.app_handle());
-                    }
                     _ => {}
                 })
                 .build(app)?;
